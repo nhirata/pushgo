@@ -21,8 +21,8 @@ const (
 	PURGE
 )
 
-var ()
-	cmdLabels              = map[int]string{
+var (
+	cmdLabels = map[int]string{
 		0: "Unregister",
 		1: "Register",
 		2: "Hello",
