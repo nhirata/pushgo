@@ -19,8 +19,6 @@ import (
 
 	"code.google.com/p/go.net/websocket"
 	"github.com/gorilla/mux"
-
-	"mozilla.org/simplepush/sperrors"
 )
 
 type HandlerConfig struct{}
@@ -330,7 +328,7 @@ func (self *Handler) UpdateHandler(resp http.ResponseWriter, req *http.Request) 
 				"channelID": chid,
 				"version":   strconv.FormatInt(version, 10),
 				"error":     err.Error()})
-		status, _ := sperrors.ErrToStatus(err)
+		status, _ := ErrToStatus(err)
 		http.Error(resp, "Could not update channel version", status)
 		return
 	}

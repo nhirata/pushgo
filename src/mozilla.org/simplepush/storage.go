@@ -27,8 +27,6 @@ import (
 	"time"
 
 	"github.com/ianoshen/gomc"
-
-	"mozilla.org/simplepush/sperrors"
 )
 
 const (
@@ -412,7 +410,7 @@ func (self *Storage) fetchRec(pk []byte) (result *cr, err error) {
 	//fetch a record from Memcache
 	result = &cr{}
 	if pk == nil {
-		err = sperrors.InvalidPrimaryKeyError
+		err = InvalidPrimaryKeyError
 		return nil, err
 	}
 
@@ -504,11 +502,11 @@ func (self *Storage) storeAppIDArray(uaid []byte, arr ia) (err error) {
 
 func (self *Storage) storeRec(pk []byte, rec *cr) (err error) {
 	if pk == nil {
-		return sperrors.InvalidPrimaryKeyError
+		return InvalidPrimaryKeyError
 	}
 
 	if rec == nil {
-		err = sperrors.NoDataToStoreError
+		err = NoDataToStoreError
 		return err
 	}
 
@@ -558,7 +556,7 @@ func (self *Storage) binUpdateChannel(pk []byte, vers int64) (err error) {
 	var cRec *cr
 
 	if len(pk) == 0 {
-		return sperrors.InvalidPrimaryKeyError
+		return InvalidPrimaryKeyError
 	}
 
 	pks := hex.EncodeToString(pk)
@@ -603,7 +601,7 @@ func (self *Storage) binUpdateChannel(pk []byte, vers int64) (err error) {
 				"version":   strconv.FormatInt(vers, 10)})
 	}
 	err = self.binRegisterAppID(uaid, chid, vers)
-	if err == sperrors.ChannelExistsError {
+	if err == ChannelExistsError {
 		pk, err = binGenPK(uaid, chid)
 		if err != nil {
 			return err
@@ -622,7 +620,7 @@ func (self *Storage) binRegisterAppID(uaid, chid []byte, vers int64) (err error)
 	var rec *cr
 
 	if len(chid) == 0 {
-		return sperrors.NoChannelError
+		return NoChannelError
 	}
 
 	appIDArray, err := self.fetchAppIDArray(uaid)
@@ -658,7 +656,7 @@ func (self *Storage) binRegisterAppID(uaid, chid []byte, vers int64) (err error)
 func (self *Storage) DeleteAppID(suaid, schid string, clearOnly bool) (err error) {
 
 	if len(schid) == 0 {
-		return sperrors.NoChannelError
+		return NoChannelError
 	}
 
 	uaid := cleanID(suaid)
@@ -689,7 +687,7 @@ func (self *Storage) DeleteAppID(suaid, schid string, clearOnly bool) (err error
 			}
 		}
 	} else {
-		err = sperrors.InvalidChannelError
+		err = InvalidChannelError
 	}
 	return err
 }

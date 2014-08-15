@@ -17,8 +17,6 @@ import (
 	"time"
 
 	"code.google.com/p/go.net/websocket"
-
-	"mozilla.org/simplepush/sperrors"
 )
 
 var MissingChannelErr = errors.New("Missing channelID")
@@ -146,7 +144,7 @@ func (self *Worker) sniffer(sock *PushWS) {
 				}
 				self.handleError(sock,
 					JsMap{},
-					sperrors.UnknownCommandError)
+					UnknownCommandError)
 				self.stopped = true
 				continue
 			} else {
@@ -177,7 +175,7 @@ func (self *Worker) sniffer(sock *PushWS) {
 						"Bad command",
 						LogFields{"messageType": buffer["messageType"].(string)})
 				}
-				err = sperrors.UnknownCommandError
+				err = UnknownCommandError
 			}
 		}
 		if err != nil {
@@ -201,7 +199,7 @@ func (self *Worker) handleError(sock *PushWS, message JsMap, err error) (ret err
 		self.logger.Info("worker", "Sending error",
 			LogFields{"error": ErrStr(err)})
 	}
-	message["status"], message["error"] = sperrors.ErrToStatus(err)
+	message["status"], message["error"] = ErrToStatus(err)
 	return websocket.JSON.Send(sock.Socket, message)
 }
 
@@ -242,7 +240,7 @@ func (self *Worker) Hello(sock *PushWS, buffer interface{}) (err error) {
 			self.logger.Error("worker",
 				"Unhandled error",
 				LogFields{"cmd": "hello", "error": r.(error).Error()})
-			err = sperrors.InvalidDataError
+			err = InvalidDataError
 		}
 	}()
 
@@ -278,25 +276,25 @@ func (self *Worker) Hello(sock *PushWS, buffer interface{}) (err error) {
 	if data["channelIDs"] == nil {
 		// Must include "channelIDs" (even if empty)
 		self.logger.Debug("worker", "Missing ChannelIDs", nil)
-		return sperrors.MissingDataError
+		return MissingDataError
 	}
 	if len(sock.Uaid) > 0 &&
 		len(data["uaid"].(string)) > 0 &&
 		sock.Uaid != suggestedUAID {
 		// if there's already a Uaid for this channel, don't accept a new one
 		self.logger.Debug("worker", "Conflicting UAIDs", nil)
-		return sperrors.InvalidChannelError
+		return InvalidChannelError
 	}
 	if self.filter.Find([]byte(strings.ToLower(suggestedUAID))) != nil {
 		self.logger.Debug("worker", "Invalid character in UAID", nil)
-		return sperrors.InvalidChannelError
+		return InvalidChannelError
 	}
 	if len(sock.Uaid) == 0 {
 		// if there's no UAID for the socket, accept or create a new one.
 		sock.Uaid = suggestedUAID
 		if len(sock.Uaid) > UAID_MAX_LEN {
 			self.logger.Debug("worker", "UAID is too long", nil)
-			return sperrors.InvalidDataError
+			return InvalidDataError
 		}
 		if len(sock.Uaid) == 0 {
 			forceReset = forceReset || true
@@ -373,15 +371,15 @@ func (self *Worker) Ack(sock *PushWS, buffer interface{}) (err error) {
 			self.logger.Error("worker",
 				"Unhandled error",
 				LogFields{"cmd": "ack", "error": r.(error).Error()})
-			err = sperrors.InvalidDataError
+			err = InvalidDataError
 		}
 	}()
 	if sock.Uaid == "" {
-		return sperrors.InvalidCommandError
+		return InvalidCommandError
 	}
 	data := buffer.(JsMap)
 	if data["updates"] == nil {
-		return sperrors.MissingDataError
+		return MissingDataError
 	}
 	err = sock.Storage.Ack(sock.Uaid, data)
 	// Get the lastAccessed time from wherever.
@@ -404,23 +402,23 @@ func (self *Worker) Register(sock *PushWS, buffer interface{}) (err error) {
 				"Unhandled error",
 				LogFields{"cmd": "register", "error": ErrStr(r.(error))})
 			debug.PrintStack()
-			err = sperrors.InvalidDataError
+			err = InvalidDataError
 		}
 	}()
 
 	if sock.Uaid == "" {
-		return sperrors.InvalidCommandError
+		return InvalidCommandError
 	}
 	data := buffer.(JsMap)
 	if data["channelID"] == nil {
-		return sperrors.InvalidDataError
+		return InvalidDataError
 	}
 	appid := data["channelID"].(string)
 	if len(appid) > CHID_MAX_LEN {
-		return sperrors.InvalidDataError
+		return InvalidDataError
 	}
 	if self.filter.Find([]byte(strings.ToLower(appid))) != nil {
-		return sperrors.InvalidDataError
+		return InvalidDataError
 	}
 	err = sock.Storage.RegisterAppID(sock.Uaid, appid, 0)
 	if err != nil {
@@ -466,19 +464,19 @@ func (self *Worker) Unregister(sock *PushWS, buffer interface{}) (err error) {
 			self.logger.Error("worker",
 				"Unhandled error",
 				LogFields{"cmd": "register", "error": r.(error).Error()})
-			err = sperrors.InvalidDataError
+			err = InvalidDataError
 		}
 	}()
 	if sock.Uaid == "" {
 		self.logger.Error("worker",
 			"Unregister failed, missing sock.uaid", nil)
-		return sperrors.InvalidCommandError
+		return InvalidCommandError
 	}
 	data := buffer.(JsMap)
 	if data["channelID"] == nil {
 		self.logger.Error("worker",
 			"Unregister failed, missing channelID", nil)
-		return sperrors.MissingDataError
+		return MissingDataError
 	}
 	appid := data["channelID"].(string)
 	// Always return success for an UNREG.
@@ -578,7 +576,7 @@ func (self *Worker) Ping(sock *PushWS, buffer interface{}) (err error) {
 			LogFields{"source": source.String()})
 		self.stopped = true
 		self.metrics.Increment("updates.client.too_many_pings")
-		return sperrors.TooManyPingsError
+		return TooManyPingsError
 	}
 	data := buffer.(JsMap)
 	if self.app.pushLongPongs {
