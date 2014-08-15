@@ -5,16 +5,15 @@
 package simplepush
 
 import (
+	"fmt"
 	"io/ioutil"
 	"net/http"
 	"net/url"
 )
 
-/* Get the public AWS hostname for this machine.
- * TODO: Make this a generic utility for getting public info from
- * the aws meta server?
- */
-func GetAWSPublicHostname() (hostname string, err error) {
+// Get the public AWS hostname for this machine. Returns the hostname
+// or an error if the call failed.
+func GetAWSPublicHostname() (string, error) {
 	req := &http.Request{Method: "GET",
 		URL: &url.URL{
 			Scheme: "http",
@@ -23,14 +22,17 @@ func GetAWSPublicHostname() (hostname string, err error) {
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		return
+		return "", err
 	}
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		var hostBytes []byte
-		hostBytes, err = ioutil.ReadAll(resp.Body)
-		if err == nil {
-			hostname = string(hostBytes)
-		}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("Bad response from AWS hostname call: %d",
+			resp.StatusCode)
 	}
-	return
+
+	var hostBytes []byte
+	hostBytes, err = ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	return string(hostBytes), nil
 }
