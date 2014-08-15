@@ -97,7 +97,7 @@ func LoadConfigForSection(
 }
 
 // Load an extensible section that has a type keyword using one of the available
-// supplied extensions.
+// supplied extensions and returns it.
 func LoadExtensibleSection(
 	app *Application,
 	sectionName string,

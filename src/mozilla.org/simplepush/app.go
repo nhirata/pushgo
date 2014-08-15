@@ -90,12 +90,13 @@ func (a *Application) ConfigStruct() interface{} {
 // as well.
 // Note: We implement the Init method to comply with the interface, so the app
 // passed here will be nil.
-func (a *Application) Init(app *Application, config interface{}) (err error) {
+func (a *Application) Init(app *Application, config interface{}) error {
+	var err error
 	conf := config.(*ApplicationConfig)
 
 	if conf.UseAwsHost {
 		if a.hostname, err = GetAWSPublicHostname(); err != nil {
-			return
+			return err
 		}
 	} else {
 		a.hostname = conf.Hostname
@@ -103,7 +104,7 @@ func (a *Application) Init(app *Application, config interface{}) (err error) {
 
 	if len(conf.TokenKey) > 0 {
 		if a.tokenKey, err = base64.URLEncoding.DecodeString(conf.TokenKey); err != nil {
-			return
+			return err
 		}
 	}
 
@@ -122,14 +123,12 @@ func (a *Application) Init(app *Application, config interface{}) (err error) {
 	a.host = conf.Host
 	a.port = conf.Port
 	if a.clientMinPing, err = time.ParseDuration(conf.ClientMinPing); err != nil {
-		err = fmt.Errorf("Unable to parse 'client_min_ping_interval: %s",
+		return fmt.Errorf("Unable to parse 'client_min_ping_interval: %s",
 			err.Error())
-		return
 	}
 	if a.clientHelloTimeout, err = time.ParseDuration(conf.ClientHelloTimeout); err != nil {
-		err = fmt.Errorf("Unable to parse 'client_hello_timeout: %s",
+		return fmt.Errorf("Unable to parse 'client_hello_timeout: %s",
 			err.Error())
-		return
 	}
 	a.pushLongPongs = conf.PushLongPongs
 	a.sslCertFile = conf.SslCertFile
@@ -139,13 +138,14 @@ func (a *Application) Init(app *Application, config interface{}) (err error) {
 	a.clientMux = new(sync.RWMutex)
 	count := int32(0)
 	a.clientCount = &count
-	return
+	return nil
 }
 
 // Set a logger
-func (a *Application) SetLogger(logger Logger) (err error) {
+func (a *Application) SetLogger(logger Logger) error {
+	var err error
 	a.log, err = NewLogger(logger)
-	return
+	return err
 }
 
 func (a *Application) SetMetrics(metrics *Metrics) error {
@@ -174,8 +174,8 @@ func (a *Application) SetHandlers(handlers *Handler) error {
 }
 
 // Start the application
-func (a *Application) Run() (errChan chan error) {
-	errChan = make(chan error)
+func (a *Application) Run() chan error {
+	errChan := make(chan error)
 
 	RESTMux := mux.NewRouter()
 	RouteMux := mux.NewRouter()
@@ -250,16 +250,16 @@ func (a *Application) ClientCount() (count int) {
 	return int(atomic.LoadInt32(a.clientCount))
 }
 
-func (a *Application) ClientExists(uaid string) (collision bool) {
-	_, collision = a.GetClient(uaid)
-	return
+func (a *Application) ClientExists(uaid string) bool {
+	_, collision := a.GetClient(uaid)
+	return collision
 }
 
-func (a *Application) GetClient(uaid string) (client *Client, ok bool) {
+func (a *Application) GetClient(uaid string) (*Client, bool) {
 	a.clientMux.RLock()
-	client, ok = a.clients[uaid]
+	client, ok := a.clients[uaid]
 	a.clientMux.RUnlock()
-	return
+	return client, ok
 }
 
 func (a *Application) AddClient(uaid string, client *Client) {
