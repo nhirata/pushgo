@@ -4,12 +4,8 @@ go:
 
 cache:
     directories:
-        - go
-        - libmemcached-1.0.18
-
-before_install:
-    - sudo apt-get update
-    - sudo apt-get install -y automake autoconf m4 perl
+    - $HOME/go
+    - $HOME/libmemcached-1.0.18
 
 install:
     - make memcached
