@@ -4,8 +4,8 @@ go:
 
 cache:
     directories:
-    - $HOME/gopath/src/github.com/mozilla-services/pushgo/go
-    - $HOME/gopath/src/github.com/mozilla-services/pushgo/libmemcached-1.0.18
+    - $TRAVIS_BUILD_DIR/go
+    - $TRAVIS_BUILD_DIR/libmemcached-1.0.18
 
 install:
     - make memcached
