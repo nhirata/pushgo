@@ -103,3 +103,10 @@ type Store interface {
 	// DropPing removes all proprietary ping info for the given device.
 	DropPing(suaid string) error
 }
+
+func init() {
+	AvailableStores["memcache_memcachego"] = func() HasConfigStruct { return NewGomemc() }
+	AvailableStores["memcache_gomc"] = func() HasConfigStruct { return NewEmcee() }
+	AvailableStores["none"] = func() HasConfigStruct { return new(NoStore) }
+	AvailableStores["default"] = AvailableStores["none"]
+}

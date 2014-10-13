@@ -963,7 +963,3 @@ func (s *EmceeStore) signalClose() (err error) {
 	s.isClosing = true
 	return nil
 }
-
-func init() {
-	AvailableStores["memcache_gomc"] = func() HasConfigStruct { return NewEmcee() }
-}

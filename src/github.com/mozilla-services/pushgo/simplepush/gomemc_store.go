@@ -707,7 +707,3 @@ func (s *GomemcStore) storeRec(pk []byte, rec *ChannelRecord) error {
 	}
 	return nil
 }
-
-func init() {
-	AvailableStores["memcache_memcachego"] = func() HasConfigStruct { return NewGomemc() }
-}

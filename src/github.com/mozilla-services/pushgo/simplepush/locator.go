@@ -20,3 +20,9 @@ type Locator interface {
 	// Status indicates whether the discovery service is healthy.
 	Status() (bool, error)
 }
+
+func init() {
+	AvailableLocators["etcd"] = func() HasConfigStruct { return NewEtcdLocator() }
+	AvailableLocators["static"] = func() HasConfigStruct { return new(StaticLocator) }
+	AvailableLocators["default"] = AvailableLocators["static"]
+}

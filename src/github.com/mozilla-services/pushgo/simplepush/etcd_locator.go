@@ -301,7 +301,3 @@ func (l *EtcdLocator) fetchLoop() {
 		}
 	}
 }
-
-func init() {
-	AvailableLocators["etcd"] = func() HasConfigStruct { return NewEtcdLocator() }
-}
