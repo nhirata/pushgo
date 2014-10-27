@@ -56,6 +56,7 @@ type Application struct {
 	server             *Serv
 	store              Store
 	router             *Router
+	balancer           Balancer
 	handlers           *Handler
 	propping           PropPinger
 }
@@ -149,6 +150,11 @@ func (a *Application) SetRouter(router *Router) error {
 	return nil
 }
 
+func (a *Application) SetBalancer(b Balancer) error {
+	a.balancer = b
+	return nil
+}
+
 func (a *Application) SetServer(server *Serv) error {
 	a.server = server
 	return nil
@@ -239,6 +245,10 @@ func (a *Application) Metrics() *Metrics {
 
 func (a *Application) Router() *Router {
 	return a.router
+}
+
+func (a *Application) Balancer() Balancer {
+	return a.balancer
 }
 
 func (a *Application) Server() *Serv {
