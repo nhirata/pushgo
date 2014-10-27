@@ -14,8 +14,6 @@ import (
 	"time"
 
 	"github.com/coreos/go-etcd/etcd"
-
-	"github.com/mozilla-services/pushgo/id"
 )
 
 const (
@@ -23,8 +21,7 @@ const (
 )
 
 var (
-	ErrMinTTL     = fmt.Errorf("Default TTL too short; want at least %s", minTTL)
-	ErrEtcdStatus = fmt.Errorf("etcd returned unexpected health check result")
+	ErrMinTTL = fmt.Errorf("Default TTL too short; want at least %s", minTTL)
 )
 
 type EtcdLocatorConf struct {
@@ -61,6 +58,7 @@ type EtcdLocator struct {
 	authority       string
 	key             string
 	client          *etcd.Client
+	pinger          *EtcdPinger
 	fetches         chan etcdFetch
 	isClosing       bool
 	closeSignal     chan bool
@@ -129,11 +127,11 @@ func (l *EtcdLocator) Init(app *Application, config interface{}) (err error) {
 			LogFields{"list": strings.Join(l.serverList, ";")})
 	}
 	l.client = etcd.NewClient(l.serverList)
+	l.pinger = &EtcdPinger{l.client, l.logger}
 
 	// create the push hosts directory (if not already there)
 	if _, err = l.client.CreateDir(l.dir, 0); err != nil {
-		clientErr, ok := err.(*etcd.EtcdError)
-		if !ok || clientErr.ErrorCode != 105 {
+		if !IsKeyExist(err) {
 			l.logger.Alert("etcd", "etcd createDir error", LogFields{
 				"error": err.Error()})
 			return err
@@ -198,26 +196,8 @@ func (l *EtcdLocator) Contacts(string) (contacts []string, err error) {
 
 // Status determines whether etcd can respond to requests. Implements
 // Locator.Status().
-func (l *EtcdLocator) Status() (ok bool, err error) {
-	fakeID, err := id.Generate()
-	if err != nil {
-		return false, err
-	}
-	key, expected := "status_"+fakeID, "test"
-	if _, err = l.client.Set(key, expected, uint64(6*time.Second)); err != nil {
-		return false, err
-	}
-	resp, err := l.client.Get(key, false, false)
-	if err != nil {
-		return false, err
-	}
-	if resp.Node.Value != expected {
-		l.logger.Error("etcd", "Unexpected health check result",
-			LogFields{"expected": expected, "actual": resp.Node.Value})
-		return false, ErrEtcdStatus
-	}
-	l.client.Delete(key, false)
-	return true, nil
+func (l *EtcdLocator) Status() (bool, error) {
+	return l.pinger.Healthy()
 }
 
 // Register registers the server to the etcd cluster.
@@ -253,7 +233,7 @@ func (l *EtcdLocator) getServers() (servers []string, err error) {
 	return reply, nil
 }
 
-// refreshLoop periodically re-registers the current node with etcd.
+// registerLoop periodically re-registers the current node with etcd.
 func (l *EtcdLocator) registerLoop() {
 	defer l.closeWait.Done()
 	// auto refresh slightly more often than the TTL
