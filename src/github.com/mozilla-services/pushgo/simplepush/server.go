@@ -7,7 +7,6 @@ package simplepush
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"net"
 	"runtime/debug"
 	"strconv"
@@ -71,11 +70,9 @@ type Serv struct {
 	logger           *SimpleLogger
 	hostname         string
 	clientLn         net.Listener
-	clientHost       string
 	clientURL        string
 	maxClientConns   int
 	endpointLn       net.Listener
-	endpointHost     string
 	endpointURL      string
 	maxEndpointConns int
 	metrics          *Metrics
@@ -133,8 +130,7 @@ func (self *Serv) Init(app *Application, config interface{}) (err error) {
 		scheme = "ws"
 	}
 	host, port := self.hostPort(self.clientLn)
-	self.clientHost = CanonicalHostPort(scheme, host, port)
-	self.clientURL = fmt.Sprintf("%s://%s", scheme, self.clientHost)
+	self.clientURL = CanonicalURL(scheme, host, port)
 	self.maxClientConns = conf.Client.MaxConns
 
 	if self.endpointLn, err = conf.Endpoint.Listen(); err != nil {
@@ -148,8 +144,7 @@ func (self *Serv) Init(app *Application, config interface{}) (err error) {
 		scheme = "http"
 	}
 	host, port = self.hostPort(self.endpointLn)
-	self.endpointHost = CanonicalHostPort(scheme, host, port)
-	self.endpointURL = fmt.Sprintf("%s://%s", scheme, self.endpointHost)
+	self.endpointURL = CanonicalURL(scheme, host, port)
 	self.maxEndpointConns = conf.Endpoint.MaxConns
 
 	go self.sendClientCount()
@@ -158,10 +153,6 @@ func (self *Serv) Init(app *Application, config interface{}) (err error) {
 
 func (self *Serv) ClientListener() net.Listener {
 	return self.clientLn
-}
-
-func (self *Serv) ClientHost() string {
-	return self.clientHost
 }
 
 func (self *Serv) ClientURL() string {
@@ -174,10 +165,6 @@ func (self *Serv) MaxClientConns() int {
 
 func (self *Serv) EndpointListener() net.Listener {
 	return self.endpointLn
-}
-
-func (self *Serv) EndpointHost() string {
-	return self.endpointHost
 }
 
 func (self *Serv) EndpointURL() string {
