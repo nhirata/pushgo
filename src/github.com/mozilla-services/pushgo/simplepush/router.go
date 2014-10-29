@@ -21,6 +21,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -84,8 +85,8 @@ type Router struct {
 	rwtimeout   time.Duration
 	bucketSize  int
 	scheme      string
-	hostname    string
-	port        int
+	host        string
+	url         string
 	rclient     *http.Client
 	isClosing   bool
 	closeSignal chan bool
@@ -143,14 +144,16 @@ func (r *Router) Init(app *Application, config interface{}) (err error) {
 			LogFields{"error": err.Error()})
 		return err
 	}
-	if r.hostname = conf.DefaultHost; len(r.hostname) == 0 {
-		r.hostname = app.Hostname()
+	host := conf.DefaultHost
+	if len(host) == 0 {
+		host = app.Hostname()
 	}
 	addr := r.listener.Addr().(*net.TCPAddr)
-	if len(r.hostname) == 0 {
-		r.hostname = addr.IP.String()
+	if len(host) == 0 {
+		host = addr.IP.String()
 	}
-	r.port = addr.Port
+	r.host = CanonicalHostPort(r.scheme, host, addr.Port)
+	r.url = fmt.Sprintf("%s://%s", r.scheme, r.host)
 
 	r.bucketSize = conf.BucketSize
 	r.scheme = conf.Scheme
@@ -177,6 +180,14 @@ func (r *Router) Locator() Locator {
 
 func (r *Router) Listener() net.Listener {
 	return r.listener
+}
+
+func (r *Router) Host() string {
+	return r.host
+}
+
+func (r *Router) URL() string {
+	return r.url
 }
 
 func (r *Router) Close() (err error) {

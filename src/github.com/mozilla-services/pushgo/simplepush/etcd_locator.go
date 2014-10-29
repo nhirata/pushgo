@@ -48,7 +48,7 @@ type EtcdLocator struct {
 	defaultTTL      time.Duration
 	serverList      []string
 	dir             string
-	authority       string
+	host            string
 	key             string
 	client          *etcd.Client
 	pinger          *EtcdPinger
@@ -95,15 +95,9 @@ func (l *EtcdLocator) Init(app *Application, config interface{}) (err error) {
 	l.serverList = conf.Servers
 	l.dir = path.Clean(conf.Dir)
 
-	// The authority of the current server is used as the etcd key.
-	router := app.Router()
-	if hostname := router.hostname; hostname != "" {
-		if router.scheme == "https" && router.port != 443 || router.scheme == "http" && router.port != 80 {
-			l.authority = fmt.Sprintf("%s:%d", hostname, router.port)
-		} else {
-			l.authority = hostname
-		}
-		l.key = path.Join(l.dir, l.authority)
+	// Use the hostname and port of the current server as the etcd key.
+	if l.host = app.Router().Host(); l.host != "" {
+		l.key = path.Join(l.dir, l.host)
 	}
 
 	if l.logger.ShouldLog(INFO) {
@@ -176,14 +170,14 @@ func (l *EtcdLocator) Status() (bool, error) {
 func (l *EtcdLocator) Publish() (canRetry bool, err error) {
 	if l.logger.ShouldLog(INFO) {
 		l.logger.Info("etcd", "Registering host", LogFields{"key": l.key,
-			"host": l.authority})
+			"host": l.host})
 	}
-	if _, err = l.client.Set(l.key, l.authority, uint64(l.defaultTTL/time.Second)); err != nil {
+	if _, err = l.client.Set(l.key, l.host, uint64(l.defaultTTL/time.Second)); err != nil {
 		if l.logger.ShouldLog(ERROR) {
 			l.logger.Error("etcd", "Failed to register",
 				LogFields{"error": err.Error(),
 					"key":  l.key,
-					"host": l.authority})
+					"host": l.host})
 		}
 		return true, err
 	}
@@ -202,7 +196,7 @@ func (l *EtcdLocator) Fetch() (servers interface{}, canRetry bool, err error) {
 	}
 	reply := make([]string, 0, len(nodeList.Node.Nodes))
 	for _, node := range nodeList.Node.Nodes {
-		if node.Value == l.authority || node.Value == "" {
+		if node.Value == l.host || node.Value == "" {
 			continue
 		}
 		reply = append(reply, node.Value)
