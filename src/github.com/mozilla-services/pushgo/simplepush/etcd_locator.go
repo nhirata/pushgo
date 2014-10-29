@@ -6,7 +6,6 @@ package simplepush
 
 import (
 	"fmt"
-	"io"
 	"math/rand"
 	"path"
 	"strings"
@@ -41,12 +40,6 @@ type EtcdLocatorConf struct {
 	RefreshInterval string `toml:"refresh_interval" env:"refresh_interval"`
 }
 
-// etcdFetch is an etcd contact list request.
-type etcdFetch struct {
-	replies chan []string
-	errors  chan error
-}
-
 // EtcdLocator stores routing endpoints in etcd and polls for new contacts.
 type EtcdLocator struct {
 	logger          *SimpleLogger
@@ -59,19 +52,10 @@ type EtcdLocator struct {
 	key             string
 	client          *etcd.Client
 	pinger          *EtcdPinger
-	fetches         chan etcdFetch
-	isClosing       bool
-	closeSignal     chan bool
-	closeWait       sync.WaitGroup
+	updater         *PeriodicUpdater
 	closeLock       sync.Mutex
+	isClosed        bool
 	lastErr         error
-}
-
-func NewEtcdLocator() *EtcdLocator {
-	return &EtcdLocator{
-		fetches:     make(chan etcdFetch),
-		closeSignal: make(chan bool),
-	}
 }
 
 func (*EtcdLocator) ConfigStruct() interface{} {
@@ -127,7 +111,6 @@ func (l *EtcdLocator) Init(app *Application, config interface{}) (err error) {
 			LogFields{"list": strings.Join(l.serverList, ";")})
 	}
 	l.client = etcd.NewClient(l.serverList)
-	l.pinger = &EtcdPinger{l.client, l.logger}
 
 	// create the push hosts directory (if not already there)
 	if _, err = l.client.CreateDir(l.dir, 0); err != nil {
@@ -137,48 +120,35 @@ func (l *EtcdLocator) Init(app *Application, config interface{}) (err error) {
 			return err
 		}
 	}
-	if err = l.Register(); err != nil {
-		l.logger.Alert("etcd", "Could not register with etcd",
-			LogFields{"error": err.Error()})
-		return err
-	}
 
-	l.closeWait.Add(2)
-	go l.registerLoop()
-	go l.fetchLoop()
+	publishInterval := time.Duration(0.75*l.defaultTTL.Seconds()) * time.Second
+	l.updater = NewPeriodicUpdater(l, publishInterval, l.refreshInterval)
+	l.pinger = &EtcdPinger{l.client, l.logger}
+
 	return nil
 }
 
 // Close stops the locator and closes the etcd client connection. Implements
 // Locator.Close().
 func (l *EtcdLocator) Close() (err error) {
-	defer l.closeLock.Unlock()
 	l.closeLock.Lock()
-	if l.isClosing {
-		return l.lastErr
+	defer l.closeLock.Unlock()
+	err = l.lastErr
+	if l.isClosed {
+		return err
 	}
-	close(l.closeSignal)
-	l.closeWait.Wait()
+	l.isClosed = true
+	l.lastErr = l.updater.Close()
 	if l.key != "" {
-		_, err = l.client.Delete(l.key, false)
+		_, l.lastErr = l.client.Delete(l.key, false)
 	}
-	l.isClosing = true
-	l.lastErr = err
 	return err
 }
 
 // Contacts returns a shuffled list of all nodes in the Simple Push cluster.
 // Implements Locator.Contacts().
 func (l *EtcdLocator) Contacts(string) (contacts []string, err error) {
-	replies, errors := make(chan []string, 1), make(chan error, 1)
-	l.fetches <- etcdFetch{replies, errors}
-	select {
-	case <-l.closeSignal:
-		return nil, io.EOF
-
-	case contacts = <-replies:
-	case err = <-errors:
-	}
+	reply, err := l.updater.Fetch()
 	if err != nil {
 		if l.logger.ShouldLog(ERROR) {
 			l.logger.Error("etcd", "Could not get server list",
@@ -186,6 +156,7 @@ func (l *EtcdLocator) Contacts(string) (contacts []string, err error) {
 		}
 		return nil, err
 	}
+	contacts = reply.([]string)
 	for length := len(contacts); length > 0; {
 		index := rand.Intn(length)
 		length--
@@ -200,10 +171,12 @@ func (l *EtcdLocator) Status() (bool, error) {
 	return l.pinger.Healthy()
 }
 
-// Register registers the server to the etcd cluster.
-func (l *EtcdLocator) Register() (err error) {
+// Publish registers the server to the etcd cluster. Implements
+// Updater.Publish().
+func (l *EtcdLocator) Publish() (canRetry bool, err error) {
 	if l.logger.ShouldLog(INFO) {
-		l.logger.Info("etcd", "Registering host", LogFields{"host": l.authority})
+		l.logger.Info("etcd", "Registering host", LogFields{"key": l.key,
+			"host": l.authority})
 	}
 	if _, err = l.client.Set(l.key, l.authority, uint64(l.defaultTTL/time.Second)); err != nil {
 		if l.logger.ShouldLog(ERROR) {
@@ -212,16 +185,20 @@ func (l *EtcdLocator) Register() (err error) {
 					"key":  l.key,
 					"host": l.authority})
 		}
-		return err
+		return true, err
 	}
-	return nil
+	return false, nil
 }
 
-// getServers gets the current contact list from etcd.
-func (l *EtcdLocator) getServers() (servers []string, err error) {
+// Fetch gets the current contact list from etcd. Implements Updater.Fetch().
+func (l *EtcdLocator) Fetch() (servers interface{}, canRetry bool, err error) {
 	nodeList, err := l.client.Get(l.dir, false, false)
 	if err != nil {
-		return nil, err
+		if l.logger.ShouldLog(ERROR) {
+			l.logger.Error("etcd", "Could not register with etcd",
+				LogFields{"error": err.Error(), "dir": l.dir})
+		}
+		return nil, true, err
 	}
 	reply := make([]string, 0, len(nodeList.Node.Nodes))
 	for _, node := range nodeList.Node.Nodes {
@@ -230,58 +207,9 @@ func (l *EtcdLocator) getServers() (servers []string, err error) {
 		}
 		reply = append(reply, node.Value)
 	}
-	return reply, nil
-}
-
-// registerLoop periodically re-registers the current node with etcd.
-func (l *EtcdLocator) registerLoop() {
-	defer l.closeWait.Done()
-	// auto refresh slightly more often than the TTL
-	timeout := 0.75 * l.defaultTTL.Seconds()
-	ticker := time.NewTicker(time.Duration(timeout) * time.Second)
-	for ok := true; ok; {
-		select {
-		case ok = <-l.closeSignal:
-		case <-ticker.C:
-			l.Register()
-		}
-	}
-	ticker.Stop()
-}
-
-// fetchLoop polls etcd for new nodes and responds to requests for contacts.
-func (l *EtcdLocator) fetchLoop() {
-	defer l.closeWait.Done()
-	var (
-		lastReply   []string
-		lastRefresh time.Time
-	)
-	for ok := true; ok; {
-		select {
-		case ok = <-l.closeSignal:
-		case <-time.After(l.refreshInterval):
-			if reply, err := l.getServers(); err == nil {
-				lastReply = reply
-				lastRefresh = time.Now()
-			}
-
-		case fetch := <-l.fetches:
-			if !lastRefresh.IsZero() && time.Now().Sub(lastRefresh) < l.refreshInterval {
-				fetch.replies <- lastReply
-				break
-			}
-			reply, err := l.getServers()
-			if err != nil {
-				fetch.errors <- err
-				break
-			}
-			lastReply = reply
-			lastRefresh = time.Now()
-			fetch.replies <- reply
-		}
-	}
+	return reply, false, nil
 }
 
 func init() {
-	AvailableLocators["etcd"] = func() HasConfigStruct { return NewEtcdLocator() }
+	AvailableLocators["etcd"] = func() HasConfigStruct { return new(EtcdLocator) }
 }
