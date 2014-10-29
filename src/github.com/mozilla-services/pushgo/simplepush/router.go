@@ -21,7 +21,6 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -55,17 +54,12 @@ type RouterConfig struct {
 	// HTTP request to complete. Defaults to 3 seconds.
 	Rwtimeout string
 
-	// Scheme is the scheme component of the proxy endpoint, used by the router
-	// to construct the endpoint of a peer. Defaults to "http".
-	Scheme string
-
 	// DefaultHost is the default hostname of the proxy endpoint. No default
 	// value; overrides simplepush.Application.Hostname() if specified.
 	DefaultHost string `toml:"default_host" env:"default_host"`
 
 	// UrlTemplate is a text/template source string for constructing the proxy
-	// endpoint URL. Interpolated variables are {{.Scheme}}, {{.Host}}, and
-	// {{.Uaid}}.
+	// endpoint URL. Interpolated variables are {{.Host}} and {{.Uaid}}.
 	UrlTemplate string `toml:"url_template" env:"url_template"`
 
 	// Listener specifies the address and port, maximum connections, TCP
@@ -105,8 +99,7 @@ func (*Router) ConfigStruct() interface{} {
 		BucketSize:  10,
 		Ctimeout:    "3s",
 		Rwtimeout:   "3s",
-		Scheme:      "http",
-		UrlTemplate: "{{.Scheme}}://{{.Host}}/route/{{.Uaid}}",
+		UrlTemplate: "{{.Host}}/route/{{.Uaid}}",
 		Listener: ListenerConfig{
 			Addr:            ":3000",
 			MaxConns:        1000,
@@ -144,6 +137,12 @@ func (r *Router) Init(app *Application, config interface{}) (err error) {
 			LogFields{"error": err.Error()})
 		return err
 	}
+	var scheme string
+	if conf.Listener.UseTLS() {
+		scheme = "https"
+	} else {
+		scheme = "http"
+	}
 	host := conf.DefaultHost
 	if len(host) == 0 {
 		host = app.Hostname()
@@ -152,12 +151,9 @@ func (r *Router) Init(app *Application, config interface{}) (err error) {
 	if len(host) == 0 {
 		host = addr.IP.String()
 	}
-	r.host = CanonicalHostPort(r.scheme, host, addr.Port)
-	r.url = fmt.Sprintf("%s://%s", r.scheme, r.host)
+	r.url = CanonicalURL(scheme, host, addr.Port)
 
 	r.bucketSize = conf.BucketSize
-	r.scheme = conf.Scheme
-
 	r.rclient = &http.Client{
 		Transport: &http.Transport{
 			Dial: TimeoutDialer(r.ctimeout, r.rwtimeout),
@@ -180,10 +176,6 @@ func (r *Router) Locator() Locator {
 
 func (r *Router) Listener() net.Listener {
 	return r.listener
-}
-
-func (r *Router) Host() string {
-	return r.host
 }
 
 func (r *Router) URL() string {
@@ -280,8 +272,8 @@ func (r *Router) Route(cancelSignal <-chan bool, uaid, chid string, version int6
 func (r *Router) formatURL(contact, uaid string) (string, error) {
 	url := new(bytes.Buffer)
 	err := r.template.Execute(url, struct {
-		Scheme, Host, Uaid string
-	}{r.scheme, contact, uaid})
+		Host, Uaid string
+	}{contact, uaid})
 	if err != nil {
 		return "", err
 	}

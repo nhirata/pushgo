@@ -7,6 +7,7 @@ package simplepush
 import (
 	"fmt"
 	"math/rand"
+	"net/url"
 	"path"
 	"strings"
 	"sync"
@@ -48,7 +49,7 @@ type EtcdLocator struct {
 	defaultTTL      time.Duration
 	serverList      []string
 	dir             string
-	host            string
+	url             *url.URL
 	key             string
 	client          *etcd.Client
 	pinger          *EtcdPinger
@@ -96,8 +97,14 @@ func (l *EtcdLocator) Init(app *Application, config interface{}) (err error) {
 	l.dir = path.Clean(conf.Dir)
 
 	// Use the hostname and port of the current server as the etcd key.
-	if l.host = app.Router().Host(); l.host != "" {
-		l.key = path.Join(l.dir, l.host)
+	routerURL := app.Router().URL()
+	if l.url, err = url.ParseRequestURI(routerURL); err != nil {
+		l.logger.Alert("etcd", "Error parsing router URL", LogFields{
+			"error": err.Error(), "url": routerURL})
+		return err
+	}
+	if len(l.url.Host) > 0 {
+		l.key = path.Join(l.dir, l.url.Host)
 	}
 
 	if l.logger.ShouldLog(INFO) {
@@ -170,14 +177,18 @@ func (l *EtcdLocator) Status() (bool, error) {
 func (l *EtcdLocator) Publish() (canRetry bool, err error) {
 	if l.logger.ShouldLog(INFO) {
 		l.logger.Info("etcd", "Registering host", LogFields{"key": l.key,
-			"host": l.host})
+			"host": l.url.Host})
 	}
-	if _, err = l.client.Set(l.key, l.host, uint64(l.defaultTTL/time.Second)); err != nil {
+	query := make(url.Values)
+	query.Set("s", l.url.Scheme)
+	if _, err = l.client.Set(l.key, query.Encode(),
+		uint64(l.defaultTTL/time.Second)); err != nil {
+
 		if l.logger.ShouldLog(ERROR) {
 			l.logger.Error("etcd", "Failed to register",
 				LogFields{"error": err.Error(),
 					"key":  l.key,
-					"host": l.host})
+					"host": l.url.Host})
 		}
 		return true, err
 	}
@@ -196,10 +207,30 @@ func (l *EtcdLocator) Fetch() (servers interface{}, canRetry bool, err error) {
 	}
 	reply := make([]string, 0, len(nodeList.Node.Nodes))
 	for _, node := range nodeList.Node.Nodes {
-		if node.Value == l.host || node.Value == "" {
+		if node.Value == "" {
 			continue
 		}
-		reply = append(reply, node.Value)
+		host := path.Base(node.Key)
+		if host == l.url.Host {
+			continue
+		}
+		query, err := url.ParseQuery(node.Value)
+		if err != nil {
+			if l.logger.ShouldLog(WARNING) {
+				l.logger.Warn("etcd", "Failed to parse etcd contact info", LogFields{
+					"error": err.Error(), "host": host, "info": node.Value})
+			}
+			continue
+		}
+		scheme := query.Get("s")
+		if scheme == "" {
+			if l.logger.ShouldLog(WARNING) {
+				l.logger.Warn("etcd", "etcd contact info missing scheme", LogFields{
+					"host": host, "info": node.Value})
+			}
+			continue
+		}
+		reply = append(reply, fmt.Sprintf("%s://%s", scheme, host))
 	}
 	return reply, false, nil
 }
