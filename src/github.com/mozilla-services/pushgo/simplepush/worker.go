@@ -288,25 +288,28 @@ func (self *Worker) Hello(sock *PushWS, header *RequestHeader, message []byte) (
 	if err = json.Unmarshal(message, request); err != nil {
 		return ErrInvalidParams
 	}
-	/* NOTE: This seems to be a redirect, which I don't believe we support
-	if redir := self.config.Get("db.redirect", ""); len(redir) > 0 {
-		statusCode := 302
-		resp := JsMap{
-			"messageType": header.Type,
-			"status":      statusCode,
-			"redirect":    redir,
-			"uaid":        sock.Uaid}
-		if self.logger.ShouldLog(DEBUG) {
-			self.logger.Debug("worker", "sending redirect", LogFields{
-				"rid":      self.id,
-				"cmd":      header.Type,
-				"code":     strconv.FormatInt(int64(statusCode), 10),
-				"redirect": redir,
-				"uaid":     request.DeviceID})
+
+	if b := self.app.Balancer(); b != nil {
+		host, ok := b.NextHost()
+		if !ok {
+			goto handshake
 		}
-		websocket.JSON.Send(sock.Socket, resp)
-		return nil
-	} */
+		if len(request.DeviceID) == 0 || !id.Valid(request.DeviceID) {
+			request.DeviceID, _ = id.Generate()
+		}
+		if self.logger.ShouldLog(DEBUG) {
+			self.logger.Debug("worker", "Redirecting client", LogFields{
+				"rid":  self.id,
+				"cmd":  header.Type,
+				"host": host,
+				"uaid": request.DeviceID})
+		}
+		_, err = fmt.Fprintf(sock.Socket, `{"messageType":"%s","uaid":"%s","status":302,"redirect":"%s"}`,
+			header.Type, request.DeviceID, host)
+		return err
+	}
+
+handshake:
 	if request.ChannelIDs == nil {
 		// Must include "channelIDs" (even if empty)
 		if self.logger.ShouldLog(DEBUG) {
@@ -398,20 +401,23 @@ registerDevice:
 	// 	"messageType": header.Type,
 	// 	"status":      status,
 	// 	"uaid":        sock.Uaid})
-	msg := []byte(fmt.Sprintf(`{"messageType":"%s","status":%d,"uaid":"%s"}`,
-		header.Type, status, sock.Uaid))
-	_, err = sock.Socket.Write(msg)
+	_, err = fmt.Fprintf(sock.Socket, `{"messageType":"%s","status":%d,"uaid":"%s"}`,
+		header.Type, status, sock.Uaid)
+	if err != nil {
+		if self.logger.ShouldLog(WARNING) {
+			self.logger.Warn("dash", "Error writing client handshake", LogFields{
+				"rid": self.id, "error": err.Error()})
+		}
+		return err
+	}
 	self.metrics.Increment("updates.client.hello")
 	if self.logger.ShouldLog(INFO) {
 		self.logger.Info("dash", "Client successfully connected",
 			LogFields{"rid": self.id})
 	}
 	self.state = WorkerActive
-	if err == nil {
-		// Get the lastAccessed time from wherever
-		return self.Flush(sock, 0, "", 0)
-	}
-	return err
+	// Get the lastAccessed time from wherever
+	return self.Flush(sock, 0, "", 0)
 }
 
 // Clear the data that the client stated it received, then re-flush any
