@@ -27,6 +27,7 @@ type EtcdBalancerConf struct {
 
 	// Threshold is the connected client threshold. Once this threshold is
 	// exceeded, the balancer will redirect connecting clients to other hosts.
+	// Defaults to 0.75.
 	Threshold float64
 
 	// UpdateInterval is the interval for publishing client counts to etcd.

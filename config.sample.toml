@@ -193,3 +193,18 @@ type = "static"
 #prefix = "myhostname.simplepush"
 #statsd_name = "undef"
 #statsd_server = "heka_statsdinput_host:1234"
+
+[balancer]
+type = "none"
+
+#[balancer]
+#type = "etcd"
+#servers = ["http://localhost:4001"]
+# The maximum amount of time that published client counts will be
+# considered valid.
+#ttl = "5m"
+# The connected client threshold. Once exceeded, connecting clients will be
+# redirected to hosts with the fewest connections.
+#threshold = 0.75
+# The client count publication interval.
+#update_interval = "1m"
