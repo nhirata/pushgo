@@ -323,10 +323,14 @@ func (a *Application) RemoveClient(uaid string) {
 }
 
 func (a *Application) Stop() {
-	a.server.Close()
-	a.router.Close()
-	a.store.Close()
-	a.log.Close()
+	closers := []interface {
+		Close() error
+	}{a.server, a.balancer, a.router, a.store, a.log}
+	for _, c := range closers {
+		if c != nil {
+			c.Close()
+		}
+	}
 }
 
 func isSameOrigin(a, b *url.URL) bool {
