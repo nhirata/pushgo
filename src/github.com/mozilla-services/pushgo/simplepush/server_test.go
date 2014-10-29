@@ -102,6 +102,13 @@ func (t *TestServer) load() (*Application, error) {
 			}
 			return locator, nil
 		},
+		PluginBalancer: func(app *Application) (HasConfigStruct, error) {
+			balancer := new(NoBalancer)
+			if err := balancer.Init(app, nil); err != nil {
+				return nil, fmt.Errorf("Error initializing balancer: %#v", err)
+			}
+			return balancer, nil
+		},
 		PluginServer: func(app *Application) (HasConfigStruct, error) {
 			serv := NewServer()
 			servConf := serv.ConfigStruct().(*ServerConfig)
