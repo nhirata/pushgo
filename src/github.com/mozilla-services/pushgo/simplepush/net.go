@@ -21,16 +21,16 @@ var defaultPorts = map[string]int{
 	"ws":    80,
 }
 
-// CanonicalURL constructs a URL from the given scheme, host, and port,
-// excluding default port numbers.
-func CanonicalURL(scheme, host string, port int) string {
+// CanonicalHostPort combines the given host and port into an address of
+// the form "host:port", excluding default scheme port numbers.
+func CanonicalHostPort(scheme, host string, port int) string {
 	if strings.IndexByte(host, ':') >= 0 || strings.IndexByte(host, '%') >= 0 {
 		host = "[" + host + "]"
 	}
 	if defaultPorts[scheme] == port {
-		return fmt.Sprintf("%s://%s", scheme, host)
+		return host
 	}
-	return fmt.Sprintf("%s://%s:%d", scheme, host, port)
+	return fmt.Sprintf("%s:%d", host, port)
 }
 
 // TooBusyError is a temporary error returned when too many simultaneous
