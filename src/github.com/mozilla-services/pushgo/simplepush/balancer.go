@@ -9,10 +9,10 @@ var AvailableBalancers = make(AvailableExtensions)
 // A Balancer redirects clients to different hosts if the current host is
 // overloaded.
 type Balancer interface {
-	// NextHost redirects connecting clients to a new host, typically with
+	// RedirectURL redirects connecting clients to a peer host, typically with
 	// the lowest connection count. Clients should detect and handle redirect
 	// loops.
-	NextHost() (host string, ok bool)
+	RedirectURL() (origin string, ok bool, err error)
 
 	// Status indicates whether the balancer is healthy.
 	Status() (ok bool, err error)

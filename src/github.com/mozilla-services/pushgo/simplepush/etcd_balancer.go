@@ -5,6 +5,9 @@
 package simplepush
 
 import (
+	"errors"
+	"fmt"
+	"net/url"
 	"path"
 	"strconv"
 	"sync"
@@ -12,6 +15,9 @@ import (
 
 	"github.com/coreos/go-etcd/etcd"
 )
+
+// ErrNoPeers is returned if the cluster is full.
+var ErrNoPeers = errors.New("No peers available")
 
 type EtcdBalancerConf struct {
 	// Dir is the etcd directory containing the connected client counts.
@@ -44,7 +50,7 @@ type EtcdBalancer struct {
 	maxWorkers     int
 	threshold      float64
 	dir            string
-	host           string
+	url            *url.URL
 	key            string
 	workerCount    func() int
 	log            *SimpleLogger
@@ -76,8 +82,15 @@ func (b *EtcdBalancer) Init(app *Application, config interface{}) (err error) {
 
 	b.threshold = conf.Threshold
 	b.dir = path.Clean(conf.Dir)
-	if b.host = app.Server().ClientHost(); len(b.host) > 0 {
-		b.key = path.Join(b.dir, b.host)
+
+	workerURL := app.Server().ClientURL()
+	if b.url, err = url.ParseRequestURI(workerURL); err != nil {
+		b.log.Alert("balancer", "Error parsing WebSocket URL", LogFields{
+			"error": err.Error(), "url": workerURL})
+		return err
+	}
+	if len(b.url.Host) > 0 {
+		b.key = path.Join(b.dir, b.url.Host)
 	}
 
 	if b.updateInterval, err = time.ParseDuration(conf.UpdateInterval); err != nil {
@@ -107,12 +120,12 @@ func (b *EtcdBalancer) Init(app *Application, config interface{}) (err error) {
 	return nil
 }
 
-// NextHost returns the host with the fewest connected clients. Implements
-// Balancer.NextHost().
-func (b *EtcdBalancer) NextHost() (host string, ok bool) {
-	workerCount := int64(b.workerCount())
-	if float64(workerCount)/float64(b.maxWorkers) < b.threshold {
-		return "", false
+// RedirectURL returns the absolute URL of the peer with the fewest connected
+// clients. Implements Balancer.NextURL().
+func (b *EtcdBalancer) RedirectURL() (origin string, ok bool, err error) {
+	currentWorkers := int64(b.workerCount())
+	if float64(currentWorkers)/float64(b.maxWorkers) < b.threshold {
+		return "", false, nil
 	}
 	reply, err := b.updater.Fetch()
 	if err != nil {
@@ -120,31 +133,52 @@ func (b *EtcdBalancer) NextHost() (host string, ok bool) {
 			b.log.Warn("balancer", "Failed to retrieve WebSocket count",
 				LogFields{"error": err.Error()})
 		}
-		return "", false
+		return "", false, err
 	}
 	response := reply.(*etcd.Response)
-	minCount := int64(1<<63 - 1)
+	minWorkers := int64(1<<63 - 1)
+	var scheme, host string
 	for _, node := range response.Node.Nodes {
 		if len(node.Value) == 0 {
 			continue
 		}
-		nodeCount, err := strconv.ParseInt(node.Value, 10, 64)
+		nextHost := path.Base(node.Key)
+		if nextHost == b.url.Host {
+			continue
+		}
+		query, err := url.ParseQuery(node.Value)
 		if err != nil {
 			if b.log.ShouldLog(WARNING) {
-				b.log.Warn("balancer", "Failed to parse WebSocket count", LogFields{
-					"error": err.Error(), "host": node.Key, "count": node.Value})
+				b.log.Warn("balancer", "Failed to decode etcd peer info", LogFields{
+					"error": err.Error(), "host": nextHost, "info": node.Value})
 			}
 			continue
 		}
-		if nodeCount < minCount {
-			host = node.Key
-			minCount = nodeCount
+		workerCount := query.Get("w")
+		workers, err := strconv.ParseInt(workerCount, 10, 64)
+		if err != nil {
+			if b.log.ShouldLog(WARNING) {
+				b.log.Warn("balancer", "Failed to parse WebSocket count", LogFields{
+					"error": err.Error(), "host": nextHost, "count": workerCount})
+			}
+			continue
+		}
+		if workers < minWorkers {
+			if scheme = query.Get("s"); len(scheme) == 0 {
+				if b.log.ShouldLog(WARNING) {
+					b.log.Warn("balancer", "etcd peer info missing scheme", LogFields{
+						"host": nextHost, "info": node.Value})
+				}
+				continue
+			}
+			host = nextHost
+			minWorkers = workers
 		}
 	}
-	if host == b.host || minCount >= workerCount {
-		return "", false
+	if len(host) == 0 || minWorkers >= currentWorkers {
+		return "", false, ErrNoPeers
 	}
-	return host, true
+	return fmt.Sprintf("%s://%s", scheme, host), true, nil
 }
 
 // Status determines whether etcd is available. Implements Balancer.Status().
@@ -181,15 +215,22 @@ func (b *EtcdBalancer) Fetch() (reply interface{}, canRetry bool, err error) {
 // Publish stores the client count for the current node in etcd. Implements
 // Updater.Publish().
 func (b *EtcdBalancer) Publish() (canRetry bool, err error) {
-	workerCount := strconv.Itoa(b.workerCount())
+	currentWorkers := strconv.Itoa(b.workerCount())
 	if b.log.ShouldLog(INFO) {
 		b.log.Info("balancer", "Publishing WebSocket count",
-			LogFields{"host": b.host, "workers": workerCount})
+			LogFields{"host": b.url.Host, "workers": currentWorkers})
 	}
-	if _, err = b.client.Set(b.key, workerCount, uint64(b.ttl/time.Second)); err != nil {
+	query := make(url.Values)
+	query.Set("s", b.url.Scheme)
+	query.Set("w", currentWorkers)
+	if _, err = b.client.Set(b.key, query.Encode(),
+		uint64(b.ttl/time.Second)); err != nil {
+
 		if b.log.ShouldLog(ERROR) {
-			b.log.Error("balancer", "Error publishing WebSocket count",
-				LogFields{"host": b.host, "workers": workerCount, "error": err.Error()})
+			b.log.Error("balancer", "Error publishing WebSocket count", LogFields{
+				"error":   err.Error(),
+				"workers": currentWorkers,
+				"host":    b.url.Host})
 		}
 		return true, err
 	}

@@ -8,7 +8,7 @@ type NoBalancer struct{}
 
 func (*NoBalancer) ConfigStruct() interface{}            { return nil }
 func (*NoBalancer) Init(*Application, interface{}) error { return nil }
-func (*NoBalancer) NextHost() (string, bool)             { return "", false }
+func (*NoBalancer) RedirectURL() (string, bool, error)   { return "", false, nil }
 func (*NoBalancer) Status() (bool, error)                { return true, nil }
 func (*NoBalancer) Close() error                         { return nil }
 

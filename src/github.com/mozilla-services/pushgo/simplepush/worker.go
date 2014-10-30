@@ -289,23 +289,33 @@ func (self *Worker) Hello(sock *PushWS, header *RequestHeader, message []byte) (
 		return ErrInvalidParams
 	}
 
-	if b := self.app.Balancer(); b != nil {
-		host, ok := b.NextHost()
+	// Avoid redirections for duplicate handshakes.
+	if len(sock.Uaid) == 0 {
+		b := self.app.Balancer()
+		if b == nil {
+			goto handshake
+		}
+		origin, ok, err := b.RedirectURL()
+		if err != nil {
+			if self.logger.ShouldLog(WARNING) {
+				self.logger.Warn("worker", "Failed to redirect client", LogFields{
+					"error": err.Error(), "rid": self.id, "cmd": header.Type})
+			}
+			_, err = fmt.Fprintf(sock.Socket, `{"messageType":"%s","status":429}`,
+				header.Type)
+			self.stopped = true
+			return err
+		}
 		if !ok {
 			goto handshake
 		}
-		if len(request.DeviceID) == 0 || !id.Valid(request.DeviceID) {
-			request.DeviceID, _ = id.Generate()
-		}
 		if self.logger.ShouldLog(DEBUG) {
 			self.logger.Debug("worker", "Redirecting client", LogFields{
-				"rid":  self.id,
-				"cmd":  header.Type,
-				"host": host,
-				"uaid": request.DeviceID})
+				"rid": self.id, "cmd": header.Type, "origin": origin})
 		}
-		_, err = fmt.Fprintf(sock.Socket, `{"messageType":"%s","uaid":"%s","status":302,"redirect":"%s"}`,
-			header.Type, request.DeviceID, host)
+		_, err = fmt.Fprintf(sock.Socket, `{"messageType":"%s","status":302,"redirect":"%s"}`,
+			header.Type, origin)
+		self.stopped = true
 		return err
 	}
 
