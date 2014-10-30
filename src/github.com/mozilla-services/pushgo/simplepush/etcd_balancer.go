@@ -84,7 +84,7 @@ func (b *EtcdBalancer) Init(app *Application, config interface{}) (err error) {
 
 	workerURL := app.Server().ClientURL()
 	if b.url, err = url.ParseRequestURI(workerURL); err != nil {
-		b.log.Alert("balancer", "Error parsing WebSocket URL", LogFields{
+		b.log.Alert("balancer", "Error parsing client endpoint", LogFields{
 			"error": err.Error(), "url": workerURL})
 		return err
 	}
@@ -128,7 +128,7 @@ func (b *EtcdBalancer) RedirectURL() (origin string, ok bool, err error) {
 	reply, err := b.updater.Fetch()
 	if err != nil {
 		if b.log.ShouldLog(WARNING) {
-			b.log.Warn("balancer", "Failed to retrieve WebSocket count",
+			b.log.Warn("balancer", "Failed to retrieve client counts from etcd",
 				LogFields{"error": err.Error()})
 		}
 		return "", false, err
@@ -156,7 +156,7 @@ func (b *EtcdBalancer) RedirectURL() (origin string, ok bool, err error) {
 		workers, err := strconv.ParseInt(workerCount, 10, 64)
 		if err != nil {
 			if b.log.ShouldLog(WARNING) {
-				b.log.Warn("balancer", "Failed to parse WebSocket count", LogFields{
+				b.log.Warn("balancer", "Failed to parse client count", LogFields{
 					"error": err.Error(), "host": nextHost, "count": workerCount})
 			}
 			continue
@@ -215,7 +215,7 @@ func (b *EtcdBalancer) Fetch() (reply interface{}, canRetry bool, err error) {
 func (b *EtcdBalancer) Publish() (canRetry bool, err error) {
 	currentWorkers := strconv.Itoa(b.workerCount())
 	if b.log.ShouldLog(INFO) {
-		b.log.Info("balancer", "Publishing WebSocket count",
+		b.log.Info("balancer", "Publishing client count to etcd",
 			LogFields{"host": b.url.Host, "workers": currentWorkers})
 	}
 	query := make(url.Values)
@@ -225,7 +225,7 @@ func (b *EtcdBalancer) Publish() (canRetry bool, err error) {
 		uint64(b.ttl/time.Second)); err != nil {
 
 		if b.log.ShouldLog(ERROR) {
-			b.log.Error("balancer", "Error publishing WebSocket count", LogFields{
+			b.log.Error("balancer", "Error publishing client count to etcd", LogFields{
 				"error":   err.Error(),
 				"workers": currentWorkers,
 				"host":    b.url.Host})

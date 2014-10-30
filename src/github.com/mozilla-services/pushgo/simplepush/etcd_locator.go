@@ -73,20 +73,20 @@ func (l *EtcdLocator) Init(app *Application, config interface{}) (err error) {
 	l.metrics = app.Metrics()
 
 	if l.refreshInterval, err = time.ParseDuration(conf.RefreshInterval); err != nil {
-		l.logger.Alert("etcd", "Could not parse refreshInterval",
+		l.logger.Alert("locator", "Could not parse refreshInterval",
 			LogFields{"error": err.Error(),
 				"refreshInterval": conf.RefreshInterval})
 		return err
 	}
 	// default time for the server to be "live"
 	if l.defaultTTL, err = time.ParseDuration(conf.DefaultTTL); err != nil {
-		l.logger.Alert("etcd",
+		l.logger.Alert("locator",
 			"Could not parse etcd default TTL",
 			LogFields{"value": conf.DefaultTTL, "error": err.Error()})
 		return err
 	}
 	if l.defaultTTL < minTTL {
-		l.logger.Alert("etcd",
+		l.logger.Alert("locator",
 			"default TTL too short",
 			LogFields{"value": conf.DefaultTTL})
 		return ErrMinTTL
@@ -98,7 +98,7 @@ func (l *EtcdLocator) Init(app *Application, config interface{}) (err error) {
 	// Use the hostname and port of the current server as the etcd key.
 	routerURL := app.Router().URL()
 	if l.url, err = url.ParseRequestURI(routerURL); err != nil {
-		l.logger.Alert("etcd", "Error parsing router URL", LogFields{
+		l.logger.Alert("locator", "Error parsing router URL", LogFields{
 			"error": err.Error(), "url": routerURL})
 		return err
 	}
@@ -107,7 +107,7 @@ func (l *EtcdLocator) Init(app *Application, config interface{}) (err error) {
 	}
 
 	if l.logger.ShouldLog(INFO) {
-		l.logger.Info("etcd", "connecting to etcd servers",
+		l.logger.Info("locator", "connecting to etcd servers",
 			LogFields{"list": strings.Join(l.serverList, ";")})
 	}
 	l.client = etcd.NewClient(l.serverList)
@@ -115,7 +115,7 @@ func (l *EtcdLocator) Init(app *Application, config interface{}) (err error) {
 	// create the push hosts directory (if not already there)
 	if _, err = l.client.CreateDir(l.dir, 0); err != nil {
 		if !IsKeyExist(err) {
-			l.logger.Alert("etcd", "etcd createDir error", LogFields{
+			l.logger.Alert("locator", "etcd createDir error", LogFields{
 				"error": err.Error()})
 			return err
 		}
@@ -150,7 +150,7 @@ func (l *EtcdLocator) Contacts(string) (contacts []string, err error) {
 	reply, err := l.updater.Fetch()
 	if err != nil {
 		if l.logger.ShouldLog(ERROR) {
-			l.logger.Error("etcd", "Could not get server list",
+			l.logger.Error("locator", "Could not get server list from etcd",
 				LogFields{"error": err.Error()})
 		}
 		return nil, err
@@ -174,8 +174,8 @@ func (l *EtcdLocator) Status() (bool, error) {
 // Updater.Publish().
 func (l *EtcdLocator) Publish() (canRetry bool, err error) {
 	if l.logger.ShouldLog(INFO) {
-		l.logger.Info("etcd", "Registering host", LogFields{"key": l.key,
-			"host": l.url.Host})
+		l.logger.Info("locator", "Publishing host to etcd", LogFields{
+			"key": l.key, "host": l.url.Host})
 	}
 	query := make(url.Values)
 	query.Set("s", l.url.Scheme)
@@ -183,10 +183,8 @@ func (l *EtcdLocator) Publish() (canRetry bool, err error) {
 		uint64(l.defaultTTL/time.Second)); err != nil {
 
 		if l.logger.ShouldLog(ERROR) {
-			l.logger.Error("etcd", "Failed to register",
-				LogFields{"error": err.Error(),
-					"key":  l.key,
-					"host": l.url.Host})
+			l.logger.Error("locator", "Failed to publish host to etcd", LogFields{
+				"error": err.Error(), "key": l.key, "host": l.url.Host})
 		}
 		return true, err
 	}
@@ -198,7 +196,7 @@ func (l *EtcdLocator) Fetch() (servers interface{}, canRetry bool, err error) {
 	nodeList, err := l.client.Get(l.dir, false, false)
 	if err != nil {
 		if l.logger.ShouldLog(ERROR) {
-			l.logger.Error("etcd", "Could not register with etcd",
+			l.logger.Error("locator", "Could not fetch contacts from etcd",
 				LogFields{"error": err.Error(), "dir": l.dir})
 		}
 		return nil, true, err
@@ -215,7 +213,7 @@ func (l *EtcdLocator) Fetch() (servers interface{}, canRetry bool, err error) {
 		query, err := url.ParseQuery(node.Value)
 		if err != nil {
 			if l.logger.ShouldLog(WARNING) {
-				l.logger.Warn("etcd", "Failed to parse etcd contact info", LogFields{
+				l.logger.Warn("locator", "Failed to parse etcd contact info", LogFields{
 					"error": err.Error(), "host": host, "info": node.Value})
 			}
 			continue
@@ -223,7 +221,7 @@ func (l *EtcdLocator) Fetch() (servers interface{}, canRetry bool, err error) {
 		scheme := query.Get("s")
 		if scheme == "" {
 			if l.logger.ShouldLog(WARNING) {
-				l.logger.Warn("etcd", "etcd contact info missing scheme", LogFields{
+				l.logger.Warn("locator", "etcd contact info missing scheme", LogFields{
 					"host": host, "info": node.Value})
 			}
 			continue
