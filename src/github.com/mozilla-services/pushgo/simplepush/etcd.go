@@ -13,9 +13,6 @@ import (
 	"github.com/mozilla-services/pushgo/id"
 )
 
-// ErrEtcdUnhealthy is returned if etcd is unavailable.
-var ErrEtcdUnhealthy = fmt.Errorf("etcd returned unexpected health check result")
-
 // IsKeyExist indicates whether the given error reports that an etcd key
 // already exists.
 func IsKeyExist(err error) bool {
@@ -23,33 +20,24 @@ func IsKeyExist(err error) bool {
 	return ok && clientErr.ErrorCode == 105
 }
 
-// EtcdPinger verifies if etcd is available.
-type EtcdPinger struct {
-	Client *etcd.Client
-	Log    *SimpleLogger
-}
-
-// Healthy indicates whether etcd can respond to requests.
-func (p *EtcdPinger) Healthy() (ok bool, err error) {
+// IsEtcdHealthy indicates whether etcd can respond to requests.
+func IsEtcdHealthy(client *etcd.Client) (ok bool, err error) {
 	fakeID, err := id.Generate()
 	if err != nil {
 		return false, err
 	}
 	key, expected := "status_"+fakeID, "test"
-	if _, err = p.Client.Set(key, expected, uint64(6*time.Second)); err != nil {
+	if _, err = client.Set(key, expected, uint64(6*time.Second)); err != nil {
 		return false, err
 	}
-	resp, err := p.Client.Get(key, false, false)
+	resp, err := client.Get(key, false, false)
 	if err != nil {
 		return false, err
 	}
 	if resp.Node.Value != expected {
-		if p.Log.ShouldLog(ERROR) {
-			p.Log.Error("etcd", "Unexpected health check result",
-				LogFields{"expected": expected, "actual": resp.Node.Value})
-		}
-		return false, ErrEtcdUnhealthy
+		return false, fmt.Errorf("Unexpected health check result: got %s; want %s",
+			resp.Node.Value, expected)
 	}
-	p.Client.Delete(key, false)
+	client.Delete(key, false)
 	return true, nil
 }

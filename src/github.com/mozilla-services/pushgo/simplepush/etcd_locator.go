@@ -52,7 +52,6 @@ type EtcdLocator struct {
 	url             *url.URL
 	key             string
 	client          *etcd.Client
-	pinger          *EtcdPinger
 	updater         *PeriodicUpdater
 	closeLock       sync.Mutex
 	isClosed        bool
@@ -124,7 +123,6 @@ func (l *EtcdLocator) Init(app *Application, config interface{}) (err error) {
 
 	publishInterval := time.Duration(0.75*l.defaultTTL.Seconds()) * time.Second
 	l.updater = NewPeriodicUpdater(l, publishInterval, l.refreshInterval)
-	l.pinger = &EtcdPinger{l.client, l.logger}
 
 	return nil
 }
@@ -169,7 +167,7 @@ func (l *EtcdLocator) Contacts(string) (contacts []string, err error) {
 // Status determines whether etcd can respond to requests. Implements
 // Locator.Status().
 func (l *EtcdLocator) Status() (bool, error) {
-	return l.pinger.Healthy()
+	return IsEtcdHealthy(l.client)
 }
 
 // Publish registers the server to the etcd cluster. Implements

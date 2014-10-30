@@ -45,7 +45,6 @@ type EtcdBalancerConf struct {
 // overloaded host are redirected to hosts with the fewest connections.
 type EtcdBalancer struct {
 	client         *etcd.Client
-	pinger         *EtcdPinger
 	updater        *PeriodicUpdater
 	maxWorkers     int
 	threshold      float64
@@ -115,7 +114,6 @@ func (b *EtcdBalancer) Init(app *Application, config interface{}) (err error) {
 
 	publishInterval := time.Duration(0.75*b.ttl.Seconds()) * time.Second
 	b.updater = NewPeriodicUpdater(b, publishInterval, b.updateInterval)
-	b.pinger = &EtcdPinger{b.client, b.log}
 
 	return nil
 }
@@ -183,7 +181,7 @@ func (b *EtcdBalancer) RedirectURL() (origin string, ok bool, err error) {
 
 // Status determines whether etcd is available. Implements Balancer.Status().
 func (b *EtcdBalancer) Status() (bool, error) {
-	return b.pinger.Healthy()
+	return IsEtcdHealthy(b.client)
 }
 
 // Close stops the balancer and closes the connection to etcd. Implements
