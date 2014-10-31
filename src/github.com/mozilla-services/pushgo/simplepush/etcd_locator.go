@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -172,7 +173,7 @@ func (l *EtcdLocator) Status() (bool, error) {
 
 // Publish registers the server to the etcd cluster. Implements
 // Updater.Publish().
-func (l *EtcdLocator) Publish() (canRetry bool, err error) {
+func (l *EtcdLocator) Publish() (err error) {
 	if l.logger.ShouldLog(INFO) {
 		l.logger.Info("locator", "Publishing host to etcd", LogFields{
 			"key": l.key, "host": l.url.Host})
@@ -186,20 +187,20 @@ func (l *EtcdLocator) Publish() (canRetry bool, err error) {
 			l.logger.Error("locator", "Failed to publish host to etcd", LogFields{
 				"error": err.Error(), "key": l.key, "host": l.url.Host})
 		}
-		return true, err
+		return err
 	}
-	return false, nil
+	return nil
 }
 
 // Fetch gets the current contact list from etcd. Implements Updater.Fetch().
-func (l *EtcdLocator) Fetch() (servers interface{}, canRetry bool, err error) {
+func (l *EtcdLocator) Fetch() (servers interface{}, err error) {
 	nodeList, err := l.client.Get(l.dir, false, false)
 	if err != nil {
 		if l.logger.ShouldLog(ERROR) {
 			l.logger.Error("locator", "Could not fetch contacts from etcd",
 				LogFields{"error": err.Error(), "dir": l.dir})
 		}
-		return nil, true, err
+		return nil, err
 	}
 	reply := make([]string, 0, len(nodeList.Node.Nodes))
 	for _, node := range nodeList.Node.Nodes {
@@ -228,7 +229,18 @@ func (l *EtcdLocator) Fetch() (servers interface{}, canRetry bool, err error) {
 		}
 		reply = append(reply, fmt.Sprintf("%s://%s", scheme, host))
 	}
-	return reply, false, nil
+	return reply, nil
+}
+
+// HandleRetry retries failed requests caused by temporary etcd errors.
+// Implements RetryHandler.HandleRetry().
+func (l *EtcdLocator) HandleRetry(attempt int, err error) bool {
+	if l.logger.ShouldLog(INFO) {
+		l.logger.Info("locator", "Retrying etcd request",
+			LogFields{"error": err.Error(), "attempt": strconv.Itoa(attempt)})
+	}
+	l.metrics.Increment("locator.retries")
+	return IsEtcdTemporary(err)
 }
 
 func init() {

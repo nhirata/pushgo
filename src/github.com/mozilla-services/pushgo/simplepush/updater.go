@@ -16,8 +16,14 @@ var ErrUpdaterClosed = errors.New("updater: fetch from closed periodic updater")
 
 // An Updater describes a type that publishes and fetches data.
 type Updater interface {
-	Publish() (canRetry bool, err error)
-	Fetch() (reply interface{}, canRetry bool, err error)
+	Publish() (err error)
+	Fetch() (reply interface{}, err error)
+}
+
+// RetryHandler is an optional interface implemented by Updaters for
+// customizing the retry behavior.
+type RetryHandler interface {
+	HandleRetry(attempt int, err error) bool
 }
 
 // periodicFuture represents a response to a fetch.
@@ -68,6 +74,17 @@ type PeriodicUpdater struct {
 	lastFetch       time.Time
 }
 
+// canRetry determines whether a request should be retried.
+func (p *PeriodicUpdater) canRetry(attempt int, err error) bool {
+	if attempt > p.MaxRetries {
+		return false
+	}
+	if handler, ok := p.Updater.(RetryHandler); ok {
+		return handler.HandleRetry(attempt, err)
+	}
+	return true
+}
+
 // Publish submits new data using the underlying updater, retrying with
 // exponential backoff if necessary.
 func (p *PeriodicUpdater) Publish() (err error) {
@@ -76,11 +93,11 @@ func (p *PeriodicUpdater) Publish() (err error) {
 		retryDelay time.Duration
 	)
 	for ok := true; ok; {
-		if ok, err = p.Updater.Publish(); err != nil {
-			if attempt >= p.MaxRetries {
+		if err = p.Updater.Publish(); err != nil {
+			attempt++
+			if !p.canRetry(attempt, err) {
 				return err
 			}
-			attempt++
 			if retryDelay == 0 {
 				retryDelay = p.RetryDelay
 			} else if retryDelay *= 2; retryDelay > p.MaxDelay {
@@ -123,11 +140,11 @@ func (p *PeriodicUpdater) fetch() (reply interface{}, err error) {
 		retryDelay time.Duration
 	)
 	for ok := true; ok; {
-		if reply, ok, err = p.Updater.Fetch(); err != nil {
-			if attempt >= p.MaxRetries {
+		if reply, err = p.Updater.Fetch(); err != nil {
+			attempt++
+			if !p.canRetry(attempt, err) {
 				return nil, err
 			}
-			attempt++
 			if retryDelay == 0 {
 				retryDelay = p.RetryDelay
 			} else if retryDelay *= 2; retryDelay > p.MaxDelay {

@@ -203,16 +203,16 @@ func (b *EtcdBalancer) Close() (err error) {
 
 // Fetch retrieves the client counts for all nodes from etcd. Implements
 // Updater.Fetch().
-func (b *EtcdBalancer) Fetch() (reply interface{}, canRetry bool, err error) {
+func (b *EtcdBalancer) Fetch() (reply interface{}, err error) {
 	if reply, err = b.client.Get(b.dir, false, false); err != nil {
-		return nil, true, err
+		return nil, err
 	}
-	return reply, false, nil
+	return reply, nil
 }
 
 // Publish stores the client count for the current node in etcd. Implements
 // Updater.Publish().
-func (b *EtcdBalancer) Publish() (canRetry bool, err error) {
+func (b *EtcdBalancer) Publish() (err error) {
 	currentWorkers := strconv.Itoa(b.workerCount())
 	if b.log.ShouldLog(INFO) {
 		b.log.Info("balancer", "Publishing client count to etcd",
@@ -230,9 +230,20 @@ func (b *EtcdBalancer) Publish() (canRetry bool, err error) {
 				"workers": currentWorkers,
 				"host":    b.url.Host})
 		}
-		return true, err
+		return err
 	}
-	return false, nil
+	return nil
+}
+
+// HandleRetry retries failed requests caused by temporary etcd errors.
+// Implements RetryHandler.HandleRetry().
+func (b *EtcdBalancer) HandleRetry(attempt int, err error) bool {
+	if b.log.ShouldLog(INFO) {
+		b.log.Info("balancer", "Retrying failed etcd request",
+			LogFields{"error": err.Error(), "attempt": strconv.Itoa(attempt)})
+	}
+	b.metrics.Increment("balancer.retries")
+	return IsEtcdTemporary(err)
 }
 
 func init() {

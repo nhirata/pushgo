@@ -20,6 +20,14 @@ func IsEtcdKeyExist(err error) bool {
 	return ok && clientErr.ErrorCode == 105
 }
 
+// IsEtcdTemporary indicates whether the given error is a temporary
+// etcd error.
+func IsEtcdTemporary(err error) bool {
+	clientErr, ok := err.(*etcd.EtcdError)
+	// Raft (300-class) and internal (400-class) errors are temporary.
+	return !ok || clientErr.ErrorCode >= 300 && clientErr.ErrorCode < 500
+}
+
 // IsEtcdHealthy indicates whether etcd can respond to requests.
 func IsEtcdHealthy(client *etcd.Client) (ok bool, err error) {
 	fakeID, err := id.Generate()
