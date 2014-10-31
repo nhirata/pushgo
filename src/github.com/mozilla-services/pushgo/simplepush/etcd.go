@@ -13,9 +13,9 @@ import (
 	"github.com/mozilla-services/pushgo/id"
 )
 
-// IsKeyExist indicates whether the given error reports that an etcd key
+// IsEtcdKeyExist indicates whether the given error reports that an etcd key
 // already exists.
-func IsKeyExist(err error) bool {
+func IsEtcdKeyExist(err error) bool {
 	clientErr, ok := err.(*etcd.EtcdError)
 	return ok && clientErr.ErrorCode == 105
 }

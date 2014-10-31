@@ -114,7 +114,7 @@ func (l *EtcdLocator) Init(app *Application, config interface{}) (err error) {
 
 	// create the push hosts directory (if not already there)
 	if _, err = l.client.CreateDir(l.dir, 0); err != nil {
-		if !IsKeyExist(err) {
+		if !IsEtcdKeyExist(err) {
 			l.logger.Alert("locator", "etcd createDir error", LogFields{
 				"error": err.Error()})
 			return err

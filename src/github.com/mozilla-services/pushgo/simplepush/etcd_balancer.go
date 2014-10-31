@@ -105,7 +105,7 @@ func (b *EtcdBalancer) Init(app *Application, config interface{}) (err error) {
 
 	b.client = etcd.NewClient(conf.Servers)
 	if _, err = b.client.CreateDir(b.dir, 0); err != nil {
-		if !IsKeyExist(err) {
+		if !IsEtcdKeyExist(err) {
 			b.log.Alert("balancer", "Error creating etcd directory",
 				LogFields{"error": err.Error()})
 			return err
