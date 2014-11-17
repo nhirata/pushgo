@@ -31,17 +31,17 @@ type Client struct {
 
 // Basic global server options
 type ServerConfig struct {
-	PushEndpoint string         `toml:"push_endpoint_template" env:"push_url_template"`
-	Client       ListenerConfig `toml:"websocket" env:"ws"`
+	PushEndpoint string         `toml:"push_endpoint_template" env:"push_endpoint_template"`
+	Client       ListenerConfig `toml:"websocket" env:"websocket"`
 	Endpoint     ListenerConfig
 }
 
 type ListenerConfig struct {
 	Addr            string
-	MaxConns        int    `toml:"max_connections" env:"max_conns"`
-	KeepAlivePeriod string `toml:"tcp_keep_alive" env:"keep_alive"`
-	CertFile        string `toml:"cert_file" env:"cert"`
-	KeyFile         string `toml:"key_file" env:"key"`
+	MaxConns        int    `toml:"max_connections" env:"max_connections"`
+	KeepAlivePeriod string `toml:"tcp_keep_alive" env:"tcp_keep_alive"`
+	CertFile        string `toml:"cert_file" env:"cert_file"`
+	KeyFile         string `toml:"key_file" env:"key_file"`
 }
 
 func (conf *ListenerConfig) UseTLS() bool {

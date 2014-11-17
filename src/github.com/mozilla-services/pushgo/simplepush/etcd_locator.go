@@ -56,7 +56,7 @@ type EtcdLocatorConf struct {
 
 	// DefaultTTL is the maximum amount of time that registered contacts will be
 	// considered valid. Defaults to "24h".
-	DefaultTTL string `env:"ttl"`
+	DefaultTTL string
 
 	// RefreshInterval is the maximum amount of time that a cached contact list
 	// will be considered valid. Defaults to "5m".

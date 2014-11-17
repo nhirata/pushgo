@@ -47,9 +47,9 @@ type GomemcStore struct {
 
 // GomemcConf specifies memcached adapter options.
 type GomemcConf struct {
-	ElastiCacheConfigEndpoint string           `toml:"elasticache_config_endpoint" env:"elasticache_discovery"`
+	ElastiCacheConfigEndpoint string           `toml:"elasticache_config_endpoint" env:"elasticache_config_endpoint"`
 	MaxChannels               int              `toml:"max_channels" env:"max_channels"`
-	Driver                    GomemcDriverConf `toml:"memcache" env:"mc"`
+	Driver                    GomemcDriverConf `toml:"memcache" env:"memcache"`
 	Db                        DbConf
 }
 
