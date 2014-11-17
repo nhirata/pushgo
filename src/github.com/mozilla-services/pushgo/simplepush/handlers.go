@@ -349,7 +349,7 @@ func (self *Handler) PushSocketHandler(ws *websocket.Conn) {
 
 	self.metrics.Increment("socket.connect")
 
-	NewWorker(self.app, requestID).Run(&sock)
+	NewWorker(self.app, requestID, &sock).Run()
 	if self.logger.ShouldLog(INFO) {
 		self.logger.Info("main", "Server for client shut-down",
 			LogFields{"rid": requestID})

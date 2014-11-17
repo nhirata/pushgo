@@ -21,6 +21,7 @@ import (
 //      these write back to the websocket.
 
 type Worker struct {
+	Sock         *PushWS
 	app          *Application
 	logger       *SimpleLogger
 	id           string
@@ -87,8 +88,9 @@ type PingReply struct {
 	Status int    `json:"status"`
 }
 
-func NewWorker(app *Application, id string) *Worker {
+func NewWorker(app *Application, id string, sock *PushWS) *Worker {
 	return &Worker{
+		Sock:         sock,
 		app:          app,
 		logger:       app.Logger(),
 		metrics:      app.Metrics(),
@@ -228,7 +230,8 @@ func (self *Worker) handleError(sock *PushWS, message []byte, err error) (ret er
 }
 
 // General workhorse loop for the websocket handler.
-func (self *Worker) Run(sock *PushWS) {
+func (self *Worker) Run() {
+	sock := self.Sock
 	time.AfterFunc(self.helloTimeout,
 		func() {
 			if sock.Uaid == "" {
@@ -369,6 +372,10 @@ func (self *Worker) handshake(sock *PushWS, request *HelloRequest) (
 		}
 		return "", false, ErrExistingID
 	}
+	var (
+		client          *Client
+		clientConnected bool
+	)
 	if len(request.DeviceID) == 0 {
 		if self.logger.ShouldLog(DEBUG) {
 			self.logger.Debug("worker", "Generating new UAID for device",
@@ -382,13 +389,6 @@ func (self *Worker) handshake(sock *PushWS, request *HelloRequest) (
 				LogFields{"rid": self.id})
 		}
 		return "", false, ErrInvalidID
-	}
-	if self.app.ClientExists(request.DeviceID) {
-		if logWarning {
-			self.logger.Warn("worker", "UAID collision; resetting UAID for device",
-				LogFields{"rid": self.id, "uaid": request.DeviceID})
-		}
-		goto forceReset
 	}
 	if !sock.Store.CanStore(len(request.ChannelIDs)) {
 		// are there a suspicious number of channels?
@@ -409,6 +409,14 @@ func (self *Worker) handshake(sock *PushWS, request *HelloRequest) (
 				LogFields{"rid": self.id, "uaid": request.DeviceID})
 		}
 		goto forceReset
+	}
+	client, clientConnected = self.app.GetClient(request.DeviceID)
+	if clientConnected {
+		if logWarning {
+			self.logger.Warn("worker", "UAID collision; disconnecting previous client",
+				LogFields{"rid": self.id, "uaid": request.DeviceID})
+		}
+		client.Worker.Sock.Socket.Close()
 	}
 	return request.DeviceID, true, nil
 
