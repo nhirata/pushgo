@@ -17,34 +17,34 @@
 package simplepush
 
 import (
-	"bytes"
 	"crypto/tls"
-	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
-	"text/template"
 	"time"
+
+	capn "github.com/glycerine/go-capnproto"
 )
 
-var ErrNoLocator = errors.New("Discovery service not configured")
-
-// Routable is the update payload sent to each contact.
-type Routable struct {
-	ChannelID string `json:"chid"`
-	Version   int64  `json:"version"`
-	Time      string `json:"time"`
-}
+var (
+	ErrNoLocator       = errors.New("Discovery service not configured")
+	ErrInvalidRoutable = errors.New("Malformed routable")
+)
 
 type RouterConfig struct {
 	// BucketSize is the maximum number of contacts to probe at once. The router
 	// will defer requests until all nodes in a bucket have responded. Defaults
 	// to 10 contacts.
 	BucketSize int `toml:"bucket_size" env:"bucket_size"`
+
+	// PoolSize is the number of goroutines to spawn for routing messages.
+	// Defaults to 30.
+	PoolSize int `toml:"pool_size" env:"pool_size"`
 
 	// Ctimeout is the maximum amount of time that the router's rclient should
 	// should wait for a dial to succeed. Defaults to 3 seconds.
@@ -58,10 +58,6 @@ type RouterConfig struct {
 	// value; overrides simplepush.Application.Hostname() if specified.
 	DefaultHost string `toml:"default_host" env:"default_host"`
 
-	// UrlTemplate is a text/template source string for constructing the proxy
-	// endpoint URL. Interpolated variables are {{.Host}} and {{.Uaid}}.
-	UrlTemplate string `toml:"url_template" env:"url_template"`
-
 	// Listener specifies the address and port, maximum connections, TCP
 	// keep-alive period, and certificate information for the routing listener.
 	Listener ListenerConfig
@@ -74,15 +70,15 @@ type Router struct {
 	listener    net.Listener
 	logger      *SimpleLogger
 	metrics     *Metrics
-	template    *template.Template
 	ctimeout    time.Duration
 	rwtimeout   time.Duration
 	bucketSize  int
-	scheme      string
-	host        string
+	poolSize    int
 	url         string
+	runs        chan func()
 	rclient     *http.Client
-	isClosing   bool
+	closeWait   sync.WaitGroup
+	isClosed    bool
 	closeSignal chan bool
 	closeLock   sync.Mutex
 	lastErr     error
@@ -90,16 +86,17 @@ type Router struct {
 
 func NewRouter() *Router {
 	return &Router{
+		runs:        make(chan func()),
 		closeSignal: make(chan bool),
 	}
 }
 
 func (*Router) ConfigStruct() interface{} {
 	return &RouterConfig{
-		BucketSize:  10,
-		Ctimeout:    "3s",
-		Rwtimeout:   "3s",
-		UrlTemplate: "{{.Host}}/route/{{.Uaid}}",
+		BucketSize: 10,
+		PoolSize:   30,
+		Ctimeout:   "3s",
+		Rwtimeout:  "3s",
 		Listener: ListenerConfig{
 			Addr:            ":3000",
 			MaxConns:        1000,
@@ -113,12 +110,6 @@ func (r *Router) Init(app *Application, config interface{}) (err error) {
 	r.logger = app.Logger()
 	r.metrics = app.Metrics()
 
-	if r.template, err = template.New("Route").Parse(conf.UrlTemplate); err != nil {
-		r.logger.Alert("router", "Could not parse router template",
-			LogFields{"error": err.Error(),
-				"template": conf.UrlTemplate})
-		return err
-	}
 	if r.ctimeout, err = time.ParseDuration(conf.Ctimeout); err != nil {
 		r.logger.Alert("router", "Could not parse ctimeout",
 			LogFields{"error": err.Error(),
@@ -154,12 +145,19 @@ func (r *Router) Init(app *Application, config interface{}) (err error) {
 	r.url = CanonicalURL(scheme, host, addr.Port)
 
 	r.bucketSize = conf.BucketSize
+	r.poolSize = conf.PoolSize
+
 	r.rclient = &http.Client{
 		Transport: &http.Transport{
 			Dial: TimeoutDialer(r.ctimeout, r.rwtimeout),
 			ResponseHeaderTimeout: r.rwtimeout,
 			TLSClientConfig:       new(tls.Config),
 		},
+	}
+
+	r.closeWait.Add(r.poolSize)
+	for i := 0; i < r.poolSize; i++ {
+		go r.runLoop()
 	}
 
 	return nil
@@ -183,18 +181,22 @@ func (r *Router) URL() string {
 }
 
 func (r *Router) Close() (err error) {
-	defer r.closeLock.Unlock()
 	r.closeLock.Lock()
-	if r.isClosing {
-		return r.lastErr
+	err = r.lastErr
+	if r.isClosed {
+		r.closeLock.Unlock()
+		return err
 	}
+	r.isClosed = true
 	close(r.closeSignal)
 	if locator := r.Locator(); locator != nil {
-		err = locator.Close()
+		r.lastErr = locator.Close()
 	}
-	r.listener.Close()
-	r.isClosing = true
-	r.lastErr = err
+	if err := r.listener.Close(); err != nil {
+		r.lastErr = err
+	}
+	r.closeLock.Unlock()
+	r.closeWait.Wait()
 	return err
 }
 
@@ -210,19 +212,11 @@ func (r *Router) Route(cancelSignal <-chan bool, uaid, chid string, version int6
 		r.metrics.Increment("router.broadcast.error")
 		return ErrNoLocator
 	}
-	msg, err := json.Marshal(&Routable{
-		ChannelID: chid,
-		Version:   version,
-		Time:      sentAt.Format(time.RFC3339Nano),
-	})
-	if err != nil {
-		if r.logger.ShouldLog(ERROR) {
-			r.logger.Error("router", "Could not compose routing message",
-				LogFields{"rid": logID, "error": err.Error()})
-		}
-		r.metrics.Increment("router.broadcast.error")
-		return err
-	}
+	segment := capn.NewBuffer(nil)
+	routable := NewRootRoutable(segment)
+	routable.SetChannelID(chid)
+	routable.SetVersion(version)
+	routable.SetTime(sentAt.UnixNano())
 	contacts, err := locator.Contacts(uaid)
 	if err != nil {
 		if r.logger.ShouldLog(ERROR) {
@@ -244,7 +238,7 @@ func (r *Router) Route(cancelSignal <-chan bool, uaid, chid string, version int6
 			"version": strconv.FormatInt(version, 10),
 			"time":    strconv.FormatInt(sentAt.UnixNano(), 10)})
 	}
-	ok, err := r.notifyAll(cancelSignal, contacts, uaid, msg, logID)
+	ok, err := r.notifyAll(cancelSignal, contacts, uaid, segment, logID)
 	endTime := time.Now()
 	if err != nil {
 		if r.logger.ShouldLog(WARNING) {
@@ -268,29 +262,18 @@ func (r *Router) Route(cancelSignal <-chan bool, uaid, chid string, version int6
 	return nil
 }
 
-// formatURL constructs a proxy endpoint for the given contact and device ID.
-func (r *Router) formatURL(contact, uaid string) (string, error) {
-	url := new(bytes.Buffer)
-	err := r.template.Execute(url, struct {
-		Host, Uaid string
-	}{contact, uaid})
-	if err != nil {
-		return "", err
-	}
-	return url.String(), nil
-}
-
 // notifyAll partitions a slice of contacts into buckets, then broadcasts an
 // update to each bucket.
 func (r *Router) notifyAll(cancelSignal <-chan bool, contacts []string,
-	uaid string, msg []byte, logID string) (ok bool, err error) {
+	uaid string, segment *capn.Segment, logID string) (ok bool, err error) {
 
 	for fromIndex := 0; !ok && fromIndex < len(contacts); {
 		toIndex := fromIndex + r.bucketSize
 		if toIndex > len(contacts) {
 			toIndex = len(contacts)
 		}
-		if ok, err = r.notifyBucket(cancelSignal, contacts[fromIndex:toIndex], uaid, msg, logID); err != nil {
+		if ok, err = r.notifyBucket(cancelSignal, contacts[fromIndex:toIndex],
+			uaid, segment, logID); err != nil {
 			break
 		}
 		fromIndex += toIndex
@@ -301,37 +284,47 @@ func (r *Router) notifyAll(cancelSignal <-chan bool, contacts []string,
 // notifyBucket routes a message to all contacts in a bucket, returning as soon
 // as a contact accepts the update.
 func (r *Router) notifyBucket(cancelSignal <-chan bool, contacts []string,
-	uaid string, msg []byte, logID string) (ok bool, err error) {
+	uaid string, segment *capn.Segment, logID string) (ok bool, err error) {
 
 	result, stop := make(chan bool), make(chan struct{})
 	defer close(stop)
+	timeout := r.ctimeout + r.rwtimeout + 1*time.Second
+	timer := time.NewTimer(timeout)
 	for _, contact := range contacts {
-		url, err := r.formatURL(contact, uaid)
-		if err != nil {
-			if r.logger.ShouldLog(ERROR) {
-				r.logger.Error("router", "Could not build routing URL",
-					LogFields{"rid": logID, "error": err.Error()})
-			}
-			return false, err
+		url := fmt.Sprintf("%s/route/%s", contact, uaid)
+		notify := func() {
+			r.notifyContact(result, stop, url, segment, logID)
 		}
-		go r.notifyContact(result, stop, contact, url, msg, logID)
+		select {
+		case <-r.closeSignal:
+			return false, io.EOF
+		case <-cancelSignal:
+			return false, nil
+		case ok = <-result:
+			return ok, nil
+		case <-timer.C:
+			return false, nil
+		case r.runs <- notify:
+		}
 	}
+	timer.Reset(timeout)
 	select {
 	case ok = <-r.closeSignal:
 		return false, io.EOF
 	case <-cancelSignal:
 	case ok = <-result:
-	case <-time.After(r.ctimeout + r.rwtimeout + 1*time.Second):
+	case <-timer.C:
 	}
 	return ok, nil
 }
 
 // notifyContact routes a message to a single contact.
 func (r *Router) notifyContact(result chan<- bool, stop <-chan struct{},
-	contact, url string, msg []byte, logID string) {
+	url string, segment *capn.Segment, logID string) {
 
-	body := bytes.NewReader(msg)
-	req, err := http.NewRequest("PUT", url, body)
+	reader, writer := io.Pipe()
+	go pipeTo(writer, segment)
+	req, err := http.NewRequest("PUT", url, reader)
 	if err != nil {
 		if r.logger.ShouldLog(ERROR) {
 			r.logger.Error("router", "Router request failed",
@@ -342,7 +335,7 @@ func (r *Router) notifyContact(result chan<- bool, stop <-chan struct{},
 	req.Header.Set(HeaderID, logID)
 	if r.logger.ShouldLog(DEBUG) {
 		r.logger.Debug("router", "Sending request",
-			LogFields{"rid": logID, "server": contact, "url": url})
+			LogFields{"rid": logID, "url": url})
 	}
 	req.Header.Add("Content-Type", "application/json")
 	resp, err := r.rclient.Do(req)
@@ -357,16 +350,35 @@ func (r *Router) notifyContact(result chan<- bool, stop <-chan struct{},
 	if resp.StatusCode != 200 {
 		if r.logger.ShouldLog(DEBUG) {
 			r.logger.Debug("router", "Denied",
-				LogFields{"rid": logID, "server": contact})
+				LogFields{"rid": logID, "url": url})
 		}
 		return
 	}
 	if r.logger.ShouldLog(INFO) {
 		r.logger.Info("router", "Server accepted",
-			LogFields{"rid": logID, "server": contact})
+			LogFields{"rid": logID, "url": url})
 	}
 	select {
 	case <-stop:
 	case result <- true:
+	case <-time.After(1 * time.Second):
 	}
+}
+
+func (r *Router) runLoop() {
+	defer r.closeWait.Done()
+	for ok := true; ok; {
+		select {
+		case ok = <-r.closeSignal:
+		case run := <-r.runs:
+			run()
+		}
+	}
+}
+
+func pipeTo(dest io.WriteCloser, src io.WriterTo) (err error) {
+	if _, err = src.WriteTo(dest); err != nil {
+		return
+	}
+	return dest.Close()
 }

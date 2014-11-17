@@ -152,10 +152,9 @@ max_connections = 60000
 
 [discovery]
 type = "static"
-# Static list of peer Simple Push servers.
-contacts = []
 
 [metrics]
+store_snapshots = false
 prefix = "docker"
 statsd_name = "pushgo"
 statsd_server = ":8125"

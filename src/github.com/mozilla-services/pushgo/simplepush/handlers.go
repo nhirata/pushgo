@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"code.google.com/p/go.net/websocket"
+	capn "github.com/glycerine/go-capnproto"
 	"github.com/gorilla/mux"
 )
 
@@ -254,24 +255,6 @@ func (self *Handler) UpdateHandler(resp http.ResponseWriter, req *http.Request) 
 		return
 	}
 
-	// Is this ours or should we punt to a different server?
-	if !self.app.ClientExists(uaid) {
-		// TODO: Move PropPinger here? otherwise it's connected?
-		self.metrics.Increment("updates.routed.outgoing")
-		resp.Header().Set("Content-Type", "application/json")
-		var cancelSignal <-chan bool
-		if cn, ok := resp.(http.CloseNotifier); ok {
-			cancelSignal = cn.CloseNotify()
-		}
-		if err = self.router.Route(cancelSignal, uaid, chid, version, time.Now().UTC(), requestID); err != nil {
-			resp.WriteHeader(http.StatusNotFound)
-			resp.Write([]byte("false"))
-			return
-		}
-		resp.Write([]byte("{}"))
-		return
-	}
-
 	// At this point we should have a valid endpoint in the URL
 	self.metrics.Increment("updates.appserver.incoming")
 
@@ -320,13 +303,30 @@ sendUpdate:
 		http.Error(resp, "Could not update channel version", status)
 		return
 	}
-	resp.Header().Set("Content-Type", "application/json")
-	resp.Write([]byte("{}"))
-	self.metrics.Increment("updates.appserver.received")
+
 	// Ping the appropriate server
-	if client, ok := self.app.GetClient(uaid); ok {
+	// Is this ours or should we punt to a different server?
+	client, clientConnected := self.app.GetClient(uaid)
+	if !clientConnected {
+		// TODO: Move PropPinger here? otherwise it's connected?
+		self.metrics.Increment("updates.routed.outgoing")
+		var cancelSignal <-chan bool
+		if cn, ok := resp.(http.CloseNotifier); ok {
+			cancelSignal = cn.CloseNotify()
+		}
+		if err = self.router.Route(cancelSignal, uaid, chid, version, time.Now().UTC(), requestID); err != nil {
+			resp.WriteHeader(http.StatusNotFound)
+			resp.Write([]byte("false"))
+			return
+		}
+	}
+
+	if clientConnected {
 		self.app.Server().RequestFlush(client, chid, int64(version))
 	}
+	self.metrics.Increment("updates.appserver.received")
+	resp.Header().Set("Content-Type", "application/json")
+	resp.Write([]byte("{}"))
 	return
 }
 
@@ -362,10 +362,7 @@ func (self *Handler) PushSocketHandler(ws *websocket.Conn) {
 // Boy Golly, sure would be nice to put this in router.go, huh?
 // well, thanks to go being picky about circular references, you can't.
 func (self *Handler) RouteHandler(resp http.ResponseWriter, req *http.Request) {
-	var (
-		err error
-		ts  time.Time
-	)
+	var err error
 	logWarning := self.logger.ShouldLog(WARNING)
 	// get the uaid from the url
 	uaid, ok := mux.Vars(req)["uaid"]
@@ -381,45 +378,34 @@ func (self *Handler) RouteHandler(resp http.ResponseWriter, req *http.Request) {
 		return
 	}
 	// We know of this one.
-	if req.ContentLength < 1 {
-		if logWarning {
-			self.logger.Warn("router", "Routed update contained no body",
-				LogFields{"rid": req.Header.Get(HeaderID), "uaid": uaid})
-		}
-		http.Error(resp, "Missing body", http.StatusNotAcceptable)
-		self.metrics.Increment("updates.routed.invalid")
-		return
-	}
-	defer req.Body.Close()
-	decoder := json.NewDecoder(req.Body)
-	request := new(Routable)
-	if err = decoder.Decode(request); err != nil {
+	var (
+		r        Routable
+		chid     string
+		timeNano int64
+		sentAt   time.Time
+	)
+	segment, err := capn.ReadFromStream(req.Body, nil)
+	if err != nil {
 		if logWarning {
 			self.logger.Warn("router", "Could not read update body",
 				LogFields{"rid": req.Header.Get(HeaderID), "error": err.Error()})
 		}
 		goto invalidBody
 	}
-	if len(request.ChannelID) == 0 {
+	r = ReadRootRoutable(segment)
+	chid = r.ChannelID()
+	if len(chid) == 0 {
 		if logWarning {
 			self.logger.Warn("router", "Missing channel ID",
 				LogFields{"rid": req.Header.Get(HeaderID), "uaid": uaid})
 		}
 		goto invalidBody
 	}
-	if ts, err = time.Parse(time.RFC3339Nano, request.Time); err != nil {
-		if logWarning {
-			self.logger.Warn("router", "Could not parse time", LogFields{
-				"rid":  req.Header.Get(HeaderID),
-				"uaid": uaid,
-				"chid": request.ChannelID,
-				"time": request.Time})
-		}
-		goto invalidBody
-	}
 	// routed data is already in storage.
 	self.metrics.Increment("updates.routed.incoming")
-	if err = self.app.Server().Update(request.ChannelID, uaid, request.Version, ts); err != nil {
+	timeNano = r.Time()
+	sentAt = time.Unix(timeNano/1e9, timeNano%1e9)
+	if err = self.app.Server().Update(chid, uaid, r.Version(), sentAt); err != nil {
 		if logWarning {
 			self.logger.Warn("router", "Could not update local user",
 				LogFields{"rid": req.Header.Get(HeaderID), "error": err.Error()})
