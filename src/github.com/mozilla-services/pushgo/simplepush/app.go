@@ -17,11 +17,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"code.google.com/p/go.net/websocket"
 	"github.com/gorilla/mux"
+	"golang.org/x/net/websocket"
 )
 
-const VERSION = "1.4"
+// The Simple Push server version, set by the linker.
+var VERSION string
 
 var (
 	ErrMissingOrigin = errors.New("Missing WebSocket origin")
@@ -171,6 +172,7 @@ func (a *Application) Run() (errChan chan error) {
 
 	clientMux := mux.NewRouter()
 	clientMux.HandleFunc("/status/", a.handlers.StatusHandler)
+	clientMux.HandleFunc("/realstatus/", a.handlers.RealStatusHandler)
 	clientMux.Handle("/", websocket.Server{Handler: a.handlers.PushSocketHandler,
 		Handshake: a.checkOrigin})
 

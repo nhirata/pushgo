@@ -115,7 +115,7 @@ func (b *EtcdBalancer) Init(app *Application, config interface{}) (err error) {
 
 	clientURL := app.Server().ClientURL()
 	if b.url, err = url.ParseRequestURI(clientURL); err != nil {
-		b.log.Alert("balancer", "Error parsing client endpoint", LogFields{
+		b.log.Panic("balancer", "Error parsing client endpoint", LogFields{
 			"error": err.Error(), "url": clientURL})
 		return err
 	}
@@ -124,12 +124,12 @@ func (b *EtcdBalancer) Init(app *Application, config interface{}) (err error) {
 	}
 
 	if b.updateInterval, err = time.ParseDuration(conf.UpdateInterval); err != nil {
-		b.log.Alert("balancer", "Error parsing 'updateInterval'", LogFields{
+		b.log.Panic("balancer", "Error parsing 'updateInterval'", LogFields{
 			"error": err.Error(), "updateInterval": conf.UpdateInterval})
 		return err
 	}
 	if b.ttl, err = time.ParseDuration(conf.TTL); err != nil {
-		b.log.Alert("balancer", "Error parsing 'ttl'", LogFields{
+		b.log.Panic("balancer", "Error parsing 'ttl'", LogFields{
 			"error": err.Error(), "ttl": conf.TTL})
 		return err
 	}
@@ -137,7 +137,7 @@ func (b *EtcdBalancer) Init(app *Application, config interface{}) (err error) {
 	b.client = etcd.NewClient(conf.Servers)
 	if _, err = b.client.CreateDir(b.dir, 0); err != nil {
 		if !IsEtcdKeyExist(err) {
-			b.log.Alert("balancer", "Error creating etcd directory",
+			b.log.Panic("balancer", "Error creating etcd directory",
 				LogFields{"error": err.Error()})
 			return err
 		}
@@ -207,8 +207,14 @@ func (b *EtcdBalancer) publishLoop() {
 }
 
 // Status determines whether etcd is available. Implements Balancer.Status().
-func (b *EtcdBalancer) Status() (bool, error) {
-	return IsEtcdHealthy(b.client)
+func (b *EtcdBalancer) Status() (ok bool, err error) {
+	if ok, err = IsEtcdHealthy(b.client); err != nil {
+		if b.log.ShouldLog(ERROR) {
+			b.log.Error("balancer", "Failed etcd health check",
+				LogFields{"error": err.Error()})
+		}
+	}
+	return
 }
 
 // Close stops the balancer and closes the connection to etcd. Implements
@@ -303,8 +309,8 @@ func (b *EtcdBalancer) minPeer(root *etcd.Node) (scheme, host string, conns int6
 func (b *EtcdBalancer) Fetch() (url string, conns int64, err error) {
 	response, err := b.client.Get(b.dir, false, true)
 	if err != nil {
-		if b.log.ShouldLog(ERROR) {
-			b.log.Error("balancer", "Failed to retrieve client counts from etcd",
+		if b.log.ShouldLog(CRITICAL) {
+			b.log.Critical("balancer", "Failed to retrieve client counts from etcd",
 				LogFields{"error": err.Error()})
 		}
 		b.metrics.Increment("balancer.fetch.error")
@@ -328,8 +334,8 @@ func (b *EtcdBalancer) Publish() (err error) {
 	if _, err = b.client.Set(b.key, currentConns,
 		uint64(b.ttl/time.Second)); err != nil {
 
-		if b.log.ShouldLog(ERROR) {
-			b.log.Error("balancer", "Error publishing client count to etcd", LogFields{
+		if b.log.ShouldLog(CRITICAL) {
+			b.log.Critical("balancer", "Error publishing client count to etcd", LogFields{
 				"error": err.Error(),
 				"conns": currentConns,
 				"host":  b.url.Host})

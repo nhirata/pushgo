@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	ws "code.google.com/p/go.net/websocket"
+	ws "golang.org/x/net/websocket"
 
 	"github.com/mozilla-services/pushgo/client"
 	"github.com/mozilla-services/pushgo/id"
@@ -30,32 +30,10 @@ const (
 	// validId is a placeholder device ID used by typeTest.
 	validId = "57954545-c1bc-4fc4-9c1a-cd186d861336"
 
-	// existingId is a device ID for which TestStore.Exists() always
-	// returns true.
-	existingId = "64300cbe-9bc3-4763-9203-d56b3f81a895"
-
-	// missingId is a device ID for which TestStore.Exists() always
-	// returns false.
-	missingId = "f7514cdd-6d01-4322-8e00-69b609763edf"
-
 	// NilId simulates a nil packet ID, as Conn.Send() will close the connection
 	// with an error if Request.Id() == nil. getId() converts NilId to nil.
 	NilId client.PacketType = -1
 )
-
-// Server is a test Simple Push server.
-var Server = &TestServer{
-	LogLevel: 0,
-	NewStore: func() ConfigStore {
-		return &TestStore{
-			ConfigStore: &NoStore{},
-			Ids: map[string]bool{
-				missingId:  false,
-				existingId: true,
-			},
-		}
-	},
-}
 
 func getId(r client.Request) (id interface{}) {
 	if id = r.Id(); id == NilId {
@@ -374,23 +352,42 @@ var typeTests = []typeTest{
 	// Quoted strings.
 	{"quoted string as device ID", "hello", `"foo bar"`, 503, true},
 	{"quoted string as message type", `"foo bar"`, validId, 401, true},
-
-	{"existing device ID with channels", "hello", existingId, 200, false},
-	// Sending channel IDs with an unknown device ID should return a new device ID.
-	{"unknown device ID with channels", "hello", missingId, 200, true},
 }
 
 func TestMessageTypes(t *testing.T) {
 	longId, err := generateIdSize(64000)
 	if err != nil {
-		t.Fatalf("Error generating device ID: %#v", err)
+		t.Fatalf("Error generating longId: %#v", err)
 	}
-	if err = (typeTest{"long device ID", "hello", longId, 503, true}).Run(); err != nil {
-		t.Error(err)
+
+	existingId, err := id.Generate()
+	if err != nil {
+		t.Fatalf("Error generating existingId: %#v", err)
 	}
-	if err = (typeTest{"long message type", longId, validId, 401, true}).Run(); err != nil {
-		t.Error(err)
+	addExistsHook(existingId, true)
+	defer removeExistsHook(existingId)
+
+	missingId, err := id.Generate()
+	if err != nil {
+		t.Fatalf("Error generating missingId: %#v", err)
 	}
+	addExistsHook(missingId, false)
+	defer removeExistsHook(missingId)
+
+	specialTypes := []typeTest{
+		{"long device ID", "hello", longId, 503, true},
+		{"long message type", longId, validId, 401, true},
+
+		{"existing device ID with channels", "hello", existingId, 200, false},
+		// Sending channel IDs with an unknown device ID should return a new device ID.
+		{"unknown device ID with channels", "hello", missingId, 200, true},
+	}
+	for _, test := range specialTypes {
+		if err := test.Run(); err != nil {
+			t.Error(err)
+		}
+	}
+
 	for _, test := range typeTests {
 		if err := test.Run(); err != nil {
 			t.Error(err)
@@ -496,6 +493,8 @@ func TestDuplicateRegisterHandshake(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error generating device ID: %#v", err)
 	}
+	addExistsHook(deviceId, true)
+	defer removeExistsHook(deviceId)
 	channelId, err := id.Generate()
 	if err != nil {
 		t.Fatalf("Error generating channel ID: %#v", err)
@@ -514,8 +513,8 @@ func TestDuplicateRegisterHandshake(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error writing handshake request: %#v", err)
 	}
-	if actualId == deviceId {
-		t.Errorf("Want new device ID; got %#v", deviceId)
+	if actualId != deviceId {
+		t.Errorf("Mismatched device ID: got %#v; want %#v", actualId, deviceId)
 	}
 	if !AllowDupes {
 		return
@@ -570,6 +569,8 @@ func (t idTest) TestHelo() error {
 	if err != nil {
 		return fmt.Errorf("On handshake test %v, error generating device ID: %#v", t.name, err)
 	}
+	addExistsHook(deviceId, true)
+	defer removeExistsHook(deviceId)
 	origin, err := Server.Origin()
 	if err != nil {
 		return fmt.Errorf("On handshake test %v, error initializing test server: %#v", t.name, err)
@@ -602,8 +603,8 @@ func (t idTest) TestHelo() error {
 		// The Simple Push server requires the channelIDs field to be present in
 		// the handshake, but does not validate its contents, since any queued
 		// messages will be immediately flushed to the client.
-		if helo.DeviceId == deviceId {
-			return fmt.Errorf("On handshake test %v, want new device ID; got %#v", t.name, deviceId)
+		if helo.DeviceId != deviceId {
+			return fmt.Errorf("On handshake test %v, mismatched device ID: got %#v; want %#v", t.name, helo.DeviceId, deviceId)
 		}
 		return nil
 	}

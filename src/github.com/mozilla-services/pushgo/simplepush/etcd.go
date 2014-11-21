@@ -32,19 +32,22 @@ func IsEtcdTemporary(err error) bool {
 func IsEtcdHealthy(client *etcd.Client) (ok bool, err error) {
 	fakeID, err := id.Generate()
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("Error generating health check key: %s", err)
 	}
 	key, expected := "status_"+fakeID, "test"
 	if _, err = client.Set(key, expected, uint64(6*time.Second)); err != nil {
-		return false, err
+		return false, fmt.Errorf("Error storing health check key %#v: %s",
+			key, err)
 	}
 	resp, err := client.Get(key, false, false)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("Error fetching health check key %#v: %s",
+			key, err)
 	}
 	if resp.Node.Value != expected {
-		return false, fmt.Errorf("Unexpected health check result: got %s; want %s",
-			resp.Node.Value, expected)
+		return false, fmt.Errorf(
+			"Unexpected value for health check key %#v: got %s; want %s",
+			key, resp.Node.Value, expected)
 	}
 	client.Delete(key, false)
 	return true, nil

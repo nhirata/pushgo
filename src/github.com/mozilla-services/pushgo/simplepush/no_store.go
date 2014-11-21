@@ -10,8 +10,15 @@ import (
 	"time"
 )
 
+type NoStoreConfig struct {
+	UAIDExists  bool `toml:"uaid_exists" env:"uaid_exists"`
+	MaxChannels int  `toml:"max_channels" env:"max_channels"`
+}
+
 type NoStore struct {
-	logger *SimpleLogger
+	logger      *SimpleLogger
+	UAIDExists  bool
+	maxChannels int
 }
 
 func (n *NoStore) KeyToIDs(key string) (suaid, schid string, ok bool) {
@@ -38,18 +45,34 @@ func (n *NoStore) IDsToKey(suaid, schid string) (string, bool) {
 }
 
 func (*NoStore) ConfigStruct() interface{} {
-	return nil
+	return &NoStoreConfig{
+		UAIDExists:  true,
+		MaxChannels: 200,
+	}
 }
 
 func (n *NoStore) Init(app *Application, config interface{}) error {
 	n.logger = app.Logger()
+	n.maxChannels = config.(*NoStoreConfig).MaxChannels
 	return nil
 }
 
-func (*NoStore) CanStore(channels int) bool                             { return true }
-func (*NoStore) Close() error                                           { return nil }
-func (*NoStore) Status() (bool, error)                                  { return true, nil }
-func (*NoStore) Exists(string) bool                                     { return false }
+func (n *NoStore) CanStore(channels int) bool {
+	return channels <= n.maxChannels
+}
+
+func (*NoStore) Close() error          { return nil }
+func (*NoStore) Status() (bool, error) { return true, nil }
+
+// return true in this case so that registration doesn't cause a new
+// UAID to be issued
+func (n *NoStore) Exists(uaid string) bool {
+	if ok, hasID := hasExistsHook(uaid); hasID {
+		return ok
+	}
+	return n.UAIDExists
+}
+
 func (*NoStore) Register(string, string, int64) error                   { return nil }
 func (*NoStore) Update(string, int64) error                             { return nil }
 func (*NoStore) Unregister(string, string) error                        { return nil }
@@ -61,5 +84,7 @@ func (*NoStore) PutPing(string, []byte) error                           { return
 func (*NoStore) DropPing(string) error                                  { return nil }
 
 func init() {
-	AvailableStores["none"] = func() HasConfigStruct { return new(NoStore) }
+	AvailableStores["none"] = func() HasConfigStruct {
+		return &NoStore{UAIDExists: true}
+	}
 }

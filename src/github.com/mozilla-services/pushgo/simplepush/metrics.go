@@ -57,10 +57,8 @@ func (m *Metrics) Init(app *Application, config interface{}) (err error) {
 	if conf.StatsdServer != "" {
 		name := strings.ToLower(conf.StatsdName)
 		if m.statsd, err = statsd.New(conf.StatsdServer, name); err != nil {
-			if m.logger.ShouldLog(ERROR) {
-				m.logger.Error("metrics", "Could not init statsd connection",
-					LogFields{"error": err.Error()})
-			}
+			m.logger.Panic("metrics", "Could not init statsd connection",
+				LogFields{"error": err.Error()})
 			return err
 		}
 	}
@@ -177,12 +175,13 @@ func (m *Metrics) Gauge(metric string, value int64) {
 		m.Unlock()
 	}
 
-	if m.logger.ShouldLog(DEBUG) {
-		m.logger.Debug("metrics", "gauge."+metric,
-			LogFields{"value": strconv.FormatInt(value, 10),
-				"type": "gauge"})
-	}
-
+	/*
+		    *if m.logger.ShouldLog(DEBUG) {
+			*	m.logger.Debug("metrics", "gauge."+metric,
+			*		LogFields{"value": strconv.FormatInt(value, 10),
+			*			"type": "gauge"})
+			*}
+	*/
 	if statsd := m.statsd; statsd != nil {
 		if value >= 0 {
 			statsd.Gauge(metric, value, 1.0)

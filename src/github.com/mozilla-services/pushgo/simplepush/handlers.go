@@ -13,9 +13,9 @@ import (
 	"strconv"
 	"time"
 
-	"code.google.com/p/go.net/websocket"
 	capn "github.com/glycerine/go-capnproto"
 	"github.com/gorilla/mux"
+	"golang.org/x/net/websocket"
 )
 
 type HandlerConfig struct{}
@@ -41,6 +41,7 @@ type StatusReport struct {
 	Locator          PluginStatus `json:"locator"`
 	Balancer         PluginStatus `json:"balancer"`
 	Goroutines       int          `json:"goroutines"`
+	Version          string       `json:"version"`
 }
 
 type PluginStatus struct {
@@ -86,8 +87,8 @@ func (self *Handler) MetricsHandler(resp http.ResponseWriter, req *http.Request)
 // VIP response
 func (self *Handler) StatusHandler(resp http.ResponseWriter,
 	req *http.Request) {
-	reply := []byte(fmt.Sprintf(`{"status":"OK","clients":%d}`,
-		self.app.ClientCount()))
+	reply := []byte(fmt.Sprintf(`{"status":"OK","clients":%d,"version":"%s"}`,
+		self.app.ClientCount(), VERSION))
 
 	resp.Header().Set("Content-Type", "application/json")
 	resp.Write(reply)
@@ -99,6 +100,7 @@ func (self *Handler) RealStatusHandler(resp http.ResponseWriter,
 	status := StatusReport{
 		MaxClientConns:   self.app.Server().MaxClientConns(),
 		MaxEndpointConns: self.app.Server().MaxEndpointConns(),
+		Version:          VERSION,
 	}
 
 	status.Store.Healthy, status.Store.Error = self.store.Status()
@@ -121,8 +123,10 @@ func (self *Handler) RealStatusHandler(resp http.ResponseWriter,
 	resp.Header().Set("Content-Type", "application/json")
 	reply, err := json.Marshal(status)
 	if err != nil {
-		self.logger.Error("handler", "Could not generate status report",
-			LogFields{"error": err.Error()})
+		if self.logger.ShouldLog(ERROR) {
+			self.logger.Error("handler", "Could not generate status report",
+				LogFields{"error": err.Error()})
+		}
 		resp.WriteHeader(http.StatusServiceUnavailable)
 		resp.Write([]byte("{}"))
 		return
@@ -242,6 +246,7 @@ func (self *Handler) UpdateHandler(resp http.ResponseWriter, req *http.Request) 
 			self.logger.Warn("update", "Could not resolve primary key",
 				LogFields{"rid": requestID, "pk": pk})
 		}
+		http.Error(resp, "Invalid Token", http.StatusNotFound)
 		self.metrics.Increment("updates.appserver.invalid")
 		return
 	}
@@ -251,6 +256,7 @@ func (self *Handler) UpdateHandler(resp http.ResponseWriter, req *http.Request) 
 			self.logger.Warn("update", "Primary key missing channel ID",
 				LogFields{"rid": requestID, "uaid": uaid})
 		}
+		http.Error(resp, "Invalid Token", http.StatusNotFound)
 		self.metrics.Increment("updates.appserver.invalid")
 		return
 	}
@@ -323,8 +329,9 @@ sendUpdate:
 
 	if clientConnected {
 		self.app.Server().RequestFlush(client, chid, int64(version))
+		self.metrics.Increment("updates.appserver.received")
 	}
-	self.metrics.Increment("updates.appserver.received")
+
 	resp.Header().Set("Content-Type", "application/json")
 	resp.Write([]byte("{}"))
 	return
