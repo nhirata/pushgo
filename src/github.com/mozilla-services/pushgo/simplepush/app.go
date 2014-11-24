@@ -326,13 +326,20 @@ func (a *Application) RemoveClient(uaid string) {
 }
 
 func (a *Application) Stop() {
-	closers := []interface {
-		Close() error
-	}{a.server, a.balancer, a.router, a.store, a.log}
-	for _, c := range closers {
-		if c != nil {
-			c.Close()
-		}
+	if a.server != nil {
+		a.server.Close()
+	}
+	if a.balancer != nil {
+		a.balancer.Close()
+	}
+	if a.router != nil {
+		a.router.Close()
+	}
+	if a.store != nil {
+		a.store.Close()
+	}
+	if a.log != nil {
+		a.log.Close()
 	}
 }
 
