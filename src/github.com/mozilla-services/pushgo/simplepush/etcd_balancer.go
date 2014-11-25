@@ -5,11 +5,12 @@
 package simplepush
 
 import (
-	"container/list"
 	"errors"
 	"fmt"
+	"math/rand"
 	"net/url"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -69,8 +70,7 @@ type EtcdBalancer struct {
 	connCount func() int
 
 	fetchLock sync.RWMutex // Protects the following fields.
-	peerURL   string
-	peerConns int64
+	peers     EtcdPeers
 	fetchErr  error
 	lastFetch time.Time
 
@@ -84,6 +84,42 @@ type EtcdBalancer struct {
 
 	closeWait   sync.WaitGroup
 	closeSignal chan bool
+}
+
+// EtcdPeer contains peer information.
+type EtcdPeer struct {
+	URL       string
+	FreeConns int64
+}
+
+// EtcdPeers is a list of peers sorted by free connection count.
+type EtcdPeers []EtcdPeer
+
+func (p EtcdPeers) Len() int           { return len(p) }
+func (p EtcdPeers) Less(i, j int) bool { return p[i].FreeConns < p[j].FreeConns }
+func (p EtcdPeers) Swap(i, j int)      { p[i], p[j] = p[j], p[i] }
+
+func (p EtcdPeers) Sum() (sum int64) {
+	for _, n := range p {
+		sum += n.FreeConns
+	}
+	return sum
+}
+
+// Choose returns a weighted random choice from the peer list.
+func (p EtcdPeers) Choose() (peer EtcdPeer, ok bool) {
+	if len(p) == 0 {
+		ok = false
+		return
+	}
+	sum := p.Sum()
+	if sum == 0 {
+		ok = false
+		return
+	}
+	w := rand.Int63n(sum)
+	i := sort.Search(len(p)-1, func(i int) bool { return p[i].FreeConns >= w })
+	return p[i], true
 }
 
 func NewEtcdBalancer() *EtcdBalancer {
@@ -158,16 +194,12 @@ func (b *EtcdBalancer) RedirectURL() (url string, ok bool, err error) {
 		return "", false, nil
 	}
 	b.fetchLock.RLock()
-	url = b.peerURL
-	peerConns := b.peerConns
 	if b.fetchErr != nil && time.Since(b.lastFetch) > b.ttl {
 		err = b.fetchErr
 	}
+	peer, ok := b.peers.Choose()
 	b.fetchLock.RUnlock()
-	if len(url) == 0 || peerConns >= currentConns {
-		return "", false, ErrNoPeers
-	}
-	return url, true, nil
+	return peer.URL, ok, err
 }
 
 func (b *EtcdBalancer) fetchLoop() {
@@ -177,14 +209,13 @@ func (b *EtcdBalancer) fetchLoop() {
 		select {
 		case ok = <-b.closeSignal:
 		case t := <-ticker.C:
-			peerURL, peerConns, err := b.Fetch()
+			peers, err := b.Fetch()
 			b.fetchLock.Lock()
 			if err != nil {
 				b.fetchErr = err
 			} else {
 				b.lastFetch = t
-				b.peerURL = peerURL
-				b.peerConns = peerConns
+				b.peers = peers
 			}
 			b.fetchLock.Unlock()
 		}
@@ -237,107 +268,117 @@ func (b *EtcdBalancer) Close() (err error) {
 	return err
 }
 
-// parseKey extracts the scheme and host from an etcd key.
+// parseKey extracts the scheme and host from an etcd key in the form of
+// "/push_conns/http/172.16.0.0:8081".
 func (b *EtcdBalancer) parseKey(key string) (scheme, host string, err error) {
+	var parts []string
 	if len(key) == 0 || key[0] != '/' {
-		return "", "", ErrNoDir
+		err = ErrNoDir
+	} else {
+		parts = strings.SplitN(key[1:], "/", 3)
+		switch len(parts) {
+		case 0:
+			err = ErrNoDir
+		case 1:
+			err = ErrNoScheme
+		case 2:
+			err = ErrNoHost
+		case 3:
+			if parts[0] != b.dir {
+				err = ErrNoDir
+			}
+		}
 	}
-	path := key[1:]
-	if len(path) <= len(b.dir) || path[:len(b.dir)] != b.dir {
-		return "", "", ErrNoDir
+	if err != nil {
+		return "", "", err
 	}
-	startScheme := strings.IndexByte(path[len(b.dir):], '/')
-	if startScheme < 0 {
-		return "", "", ErrNoScheme
-	}
-	startScheme += len(b.dir) + 1
-	startHost := strings.IndexByte(path[startScheme:], '/')
-	if startHost < 0 {
-		return "", "", ErrNoHost
-	}
-	startHost += startScheme
-	return path[startScheme:startHost], path[startHost+1:], nil
+	return parts[1], parts[2], nil
 }
 
-// minPeer returns the scheme, host, and connection count of the peer node
-// with the smallest number of connections.
-func (b *EtcdBalancer) minPeer(root *etcd.Node) (scheme, host string, conns int64) {
+func (b *EtcdBalancer) filterPeers(root *etcd.Node) (peers EtcdPeers, err error) {
 	logWarning := b.log.ShouldLog(WARNING)
-	conns = 1<<63 - 1
-	nodes := list.New()
-	nodes.PushBack(root)
-	for e := nodes.Front(); e != nil; e = e.Next() {
-		node := e.Value.(*etcd.Node)
-		if len(node.Nodes) > 0 {
-			for _, n := range node.Nodes {
-				nodes.PushBack(n)
-			}
-			continue
+	walkFn := func(n *etcd.Node) error {
+		if len(n.Value) == 0 {
+			// Ignore empty nodes.
+			return nil
 		}
-		if len(node.Value) == 0 {
-			continue
-		}
-		peerScheme, peerHost, err := b.parseKey(node.Key)
+		scheme, host, err := b.parseKey(n.Key)
 		if err != nil {
+			// Ignore malformed keys.
 			if logWarning {
 				b.log.Warn("balancer", "Failed to parse host key", LogFields{
-					"error": err.Error(), "key": node.Key})
+					"error": err.Error(), "key": n.Key})
 			}
-			continue
+			return nil
 		}
-		if peerScheme == b.url.Scheme && peerHost == b.url.Host {
-			continue
+		if scheme == b.url.Scheme && host == b.url.Host {
+			// Ignore origin server.
+			return nil
 		}
-		peerConns, err := strconv.ParseInt(node.Value, 10, 64)
+		freeConns, err := strconv.ParseInt(n.Value, 10, 64)
 		if err != nil {
 			if logWarning {
 				b.log.Warn("balancer", "Failed to parse client count", LogFields{
-					"error": err.Error(), "host": peerHost, "count": node.Value})
+					"error": err.Error(), "host": host, "count": n.Value})
 			}
-			continue
+			return nil
 		}
-		if peerConns < conns {
-			scheme = peerScheme
-			host = peerHost
-			conns = peerConns
+		if freeConns == 0 {
+			// Ignore full peers.
+			return nil
 		}
+		peers = append(peers, EtcdPeer{
+			URL:       fmt.Sprintf("%s://%s", scheme, host),
+			FreeConns: freeConns})
+		return nil
 	}
-	return
+	if err = EtcdWalk(root, walkFn); err != nil {
+		return nil, err
+	}
+	return peers, nil
 }
 
-// Fetch retrieves the client counts for all nodes from etcd.
-func (b *EtcdBalancer) Fetch() (url string, conns int64, err error) {
+// Fetch retrieves a list of peer nodes from etcd, sorted by free connections.
+func (b *EtcdBalancer) Fetch() (peers EtcdPeers, err error) {
 	response, err := b.client.Get(b.dir, false, true)
 	if err != nil {
 		if b.log.ShouldLog(CRITICAL) {
-			b.log.Critical("balancer", "Failed to retrieve client counts from etcd",
+			b.log.Critical("balancer",
+				"Failed to retrieve free connection counts from etcd",
 				LogFields{"error": err.Error()})
 		}
 		b.metrics.Increment("balancer.fetch.error")
-		return "", 0, err
+		return nil, err
 	}
 	b.metrics.Increment("balancer.fetch.success")
-	scheme, host, conns := b.minPeer(response.Node)
-	if len(scheme) == 0 || len(host) == 0 {
-		return "", 0, ErrNoPeers
+	if peers, err = b.filterPeers(response.Node); err != nil {
+		if b.log.ShouldLog(ERROR) {
+			b.log.Error("balancer", "Failed to filter peers from etcd", LogFields{
+				"error": err.Error()})
+		}
+		return nil, err
 	}
-	return fmt.Sprintf("%s://%s", scheme, host), conns, nil
+	if len(peers) == 0 {
+		return nil, ErrNoPeers
+	}
+	sort.Sort(peers)
+	return peers, nil
 }
 
 // Publish stores the client count for the current node in etcd.
 func (b *EtcdBalancer) Publish() (err error) {
-	currentConns := strconv.Itoa(b.connCount())
+	freeConns := strconv.Itoa(b.maxConns - b.connCount())
 	if b.log.ShouldLog(INFO) {
-		b.log.Info("balancer", "Publishing client count to etcd",
-			LogFields{"host": b.url.Host, "conns": currentConns})
+		b.log.Info("balancer", "Publishing free connection count to etcd",
+			LogFields{"host": b.url.Host, "conns": freeConns})
 	}
-	if _, err = b.client.Set(b.key, currentConns,
+	if _, err = b.client.Set(b.key, freeConns,
 		uint64(b.ttl/time.Second)); err != nil {
 
 		if b.log.ShouldLog(CRITICAL) {
 			b.log.Critical("balancer", "Error publishing client count to etcd", LogFields{
 				"error": err.Error(),
-				"conns": currentConns,
+				"conns": freeConns,
 				"host":  b.url.Host})
 		}
 		b.metrics.Increment("balancer.publish.error")

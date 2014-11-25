@@ -20,6 +20,21 @@ func IsEtcdKeyExist(err error) bool {
 	return ok && clientErr.ErrorCode == 105
 }
 
+// EtcdWalk walks an etcd directory tree rooted at root, calling walkFn for
+// each etcd file node. If walkFn returns an error for a given node, the
+// remaining siblings will not be traversed.
+func EtcdWalk(root *etcd.Node, walkFn func(*etcd.Node) error) (err error) {
+	if len(root.Nodes) == 0 {
+		return walkFn(root)
+	}
+	for _, node := range root.Nodes {
+		if err = EtcdWalk(node, walkFn); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // IsEtcdTemporary indicates whether the given error is a temporary
 // etcd error.
 func IsEtcdTemporary(err error) bool {
