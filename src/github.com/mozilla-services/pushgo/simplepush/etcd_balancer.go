@@ -112,6 +112,9 @@ func (p EtcdPeers) Choose() (peer EtcdPeer, ok bool) {
 		ok = false
 		return
 	}
+	if len(p) == 1 {
+		return p[0], true
+	}
 	sum := p.Sum()
 	if sum == 0 {
 		ok = false
@@ -199,7 +202,10 @@ func (b *EtcdBalancer) RedirectURL() (url string, ok bool, err error) {
 	}
 	peer, ok := b.peers.Choose()
 	b.fetchLock.RUnlock()
-	return peer.URL, ok, err
+	if !ok || int64(b.maxConns)-currentConns >= peer.FreeConns {
+		return "", false, ErrNoPeers
+	}
+	return peer.URL, true, err
 }
 
 func (b *EtcdBalancer) fetchLoop() {
@@ -271,28 +277,25 @@ func (b *EtcdBalancer) Close() (err error) {
 // parseKey extracts the scheme and host from an etcd key in the form of
 // "/push_conns/http/172.16.0.0:8081".
 func (b *EtcdBalancer) parseKey(key string) (scheme, host string, err error) {
-	var parts []string
 	if len(key) == 0 || key[0] != '/' {
 		err = ErrNoDir
-	} else {
-		parts = strings.SplitN(key[1:], "/", 3)
-		switch len(parts) {
-		case 0:
-			err = ErrNoDir
-		case 1:
-			err = ErrNoScheme
-		case 2:
-			err = ErrNoHost
-		case 3:
-			if parts[0] != b.dir {
-				err = ErrNoDir
-			}
-		}
+		return
 	}
-	if err != nil {
-		return "", "", err
+	path := strings.TrimPrefix(key[1:], b.dir)
+	if len(path) == 0 {
+		err = ErrNoDir
+		return
 	}
-	return parts[1], parts[2], nil
+	parts := strings.SplitN(path[1:], "/", 2)
+	if len(parts) == 0 {
+		err = ErrNoScheme
+		return
+	}
+	if len(parts) == 1 {
+		err = ErrNoHost
+		return
+	}
+	return parts[0], parts[1], nil
 }
 
 func (b *EtcdBalancer) filterPeers(root *etcd.Node) (peers EtcdPeers, err error) {
@@ -357,9 +360,6 @@ func (b *EtcdBalancer) Fetch() (peers EtcdPeers, err error) {
 				"error": err.Error()})
 		}
 		return nil, err
-	}
-	if len(peers) == 0 {
-		return nil, ErrNoPeers
 	}
 	sort.Sort(peers)
 	return peers, nil
