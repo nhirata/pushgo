@@ -33,6 +33,7 @@ type TestServer struct {
 	RouterAddr   string
 	LogLevel     int32
 	Contacts     []string
+	Redirects    []string
 	NewStore     func() (store ConfigStore, configStruct interface{}, err error)
 	app          *Application
 	lastErr      error
@@ -132,8 +133,10 @@ func (t *TestServer) load() (*Application, error) {
 			return locator, nil
 		},
 		PluginBalancer: func(app *Application) (HasConfigStruct, error) {
-			balancer := new(NoBalancer)
-			if err := balancer.Init(app, nil); err != nil {
+			balancer := new(StaticBalancer)
+			balancerConf := balancer.ConfigStruct().(*StaticBalancerConf)
+			balancerConf.Redirects = t.Redirects
+			if err := balancer.Init(app, balancerConf); err != nil {
 				return nil, fmt.Errorf("Error initializing balancer: %#v", err)
 			}
 			return balancer, nil
