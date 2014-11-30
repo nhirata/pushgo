@@ -34,15 +34,16 @@ type Handler struct {
 }
 
 type StatusReport struct {
-	Healthy          bool         `json:"ok"`
-	Clients          int          `json:"clientCount"`
-	MaxClientConns   int          `json:"maxClients"`
-	MaxEndpointConns int          `json:"maxEndpointConns"`
-	Store            PluginStatus `json:"store"`
-	Pinger           PluginStatus `json:"pinger"`
-	Locator          PluginStatus `json:"locator"`
-	Goroutines       int          `json:"goroutines"`
-	Version          string       `json:"version"`
+	Healthy          bool             `json:"ok"`
+	Clients          int              `json:"clientCount"`
+	MaxClientConns   int              `json:"maxClients"`
+	MaxEndpointConns int              `json:"maxEndpointConns"`
+	Store            PluginStatus     `json:"store"`
+	Pinger           PluginStatus     `json:"pinger"`
+	Locator          PluginStatus     `json:"locator"`
+	Goroutines       int              `json:"goroutines"`
+	MemStats         runtime.MemStats `json:"memory"`
+	Version          string           `json:"version"`
 }
 
 type PluginStatus struct {
@@ -105,6 +106,8 @@ func (self *Handler) RealStatusHandler(resp http.ResponseWriter,
 		MaxEndpointConns: self.app.Server().MaxEndpointConns(),
 		Version:          VERSION,
 	}
+
+	runtime.ReadMemStats(&status.MemStats)
 
 	status.Store.Healthy, status.Store.Error = self.store.Status()
 	if pinger := self.PropPinger(); pinger != nil {
