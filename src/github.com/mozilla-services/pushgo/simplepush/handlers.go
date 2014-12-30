@@ -136,15 +136,14 @@ func (h *Handler) Start(errChan chan<- error) {
 }
 
 func (h *Handler) checkOrigin(conf *websocket.Config, req *http.Request) (err error) {
-	if len(h.origins) == 0 {
-		return nil
-	}
 	if conf.Origin, err = websocket.Origin(conf, req); err != nil {
-		if h.logger.ShouldLog(WARNING) {
-			h.logger.Warn("http", "Error parsing WebSocket origin",
+		if h.logger.ShouldLog(NOTICE) {
+			h.logger.Notice("http", "Error parsing WebSocket origin",
 				LogFields{"rid": req.Header.Get(HeaderID), "error": err.Error()})
 		}
-		return err
+	}
+	if len(h.origins) == 0 {
+		return nil
 	}
 	if conf.Origin == nil {
 		return ErrMissingOrigin
